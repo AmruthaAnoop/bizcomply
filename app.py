@@ -1,656 +1,1158 @@
-#!/usr/bin/env python3
-"""
-Modern Enterprise Sidebar - Exact Color Palette
-"""
-
-import os
-import sys
 import streamlit as st
-import pandas as pd
-from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Dict, Any, List, Optional
+import requests
 import json
-import requests  # HTTP client for backend API
+import os
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any, List
 
-# New imports for business profile management
-from models.compliance_engine import ComplianceEngine
-from config.config import BusinessType, Jurisdiction
+# Import compliance components
+from models.chat import ChatRepository
 from models.llm import LLMProvider
-from services.regulatory_monitor import RegulatoryMonitor
+from models.compliance import RequirementStatus, RiskLevel, ComplianceRequirement, BusinessCompliance
+from models.embeddings import EmbeddingProvider
+from config.config import BusinessType, Jurisdiction, WEB_SEARCH_ENABLED, RESPONSE_MODES, DEFAULT_RESPONSE_MODE
 
-# Add project root to path
-sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+# Import utilities
+from utils.web_search import WebSearch
+from utils.document_processor import DocumentProcessor
 
-# Modern Enterprise Sidebar CSS
-def load_css():
+# Import RAG bot engine
+try:
+    from bot_engine import get_compliance_answer
+    RAG_AVAILABLE = True
+except ImportError:
+    RAG_AVAILABLE = False
+    print("Warning: bot_engine not available. Using fallback responses.")
+
+# RAG Chatbot Components
+class ConversationState:
+    """Manages conversation state and user profiling"""
+    def __init__(self):
+        self.current_step = "onboarding"  # onboarding, main_chat
+        self.user_profile = {
+            "location": "",
+            "entity_type": "",
+            "industry": "",
+            "business_name": "",
+            "turnover": "",
+            "employees": ""
+        }
+        self.missing_info = ["location", "entity_type", "industry"]
+        self.questionnaire_index = 0
+        self.completed_questions = []
+    
+    def is_profile_complete(self):
+        """Check if user profile is complete"""
+        return all(self.user_profile.get(key, "") != "" for key in ["location", "entity_type", "industry"])
+    
+    def get_next_question(self):
+        """Get next profiling question"""
+        questions = [
+            {
+                "key": "location",
+                "question": "Where is your business located? (City/State)",
+                "options": ["Delhi", "Mumbai", "Bangalore", "Hyderabad", "Chennai", "Other"]
+            },
+            {
+                "key": "entity_type", 
+                "question": "What type of business entity is it?",
+                "options": ["Sole Proprietorship", "Partnership Firm", "LLP", "Private Limited", "OPC"]
+            },
+            {
+                "key": "industry",
+                "question": "What industry are you in?",
+                "options": ["Food Service", "Retail", "IT Services", "Manufacturing", "Education", "Healthcare", "Other"]
+            }
+        ]
+        
+        for i, q in enumerate(questions):
+            if q["key"] not in self.completed_questions:
+                return q
+        
+        return None
+    
+    def update_profile(self, key, value):
+        """Update user profile"""
+        self.user_profile[key] = value
+        if key not in self.completed_questions:
+            self.completed_questions.append(key)
+        
+        if self.is_profile_complete():
+            self.current_step = "main_chat"
+
+class KnowledgeRetriever:
+    """RAG Knowledge Base for Compliance Rules"""
+    def __init__(self):
+        self.compliance_data = self._load_compliance_data()
+    
+    def _load_compliance_data(self):
+        """Load compliance knowledge base"""
+        try:
+            with open('compliance_data.json', 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            # Fallback data if file doesn't exist
+            return {
+                "industries": {
+                    "food_service": {
+                        "licenses": [
+                            {
+                                "name": "FSSAI State License",
+                                "mandatory": True,
+                                "description": "Required for any business handling food.",
+                                "documents": ["ID Proof", "Address Proof"]
+                            }
+                        ]
+                    }
+                }
+            }
+    
+    def search_licenses(self, industry, entity_type, location):
+        """Search for relevant licenses based on profile"""
+        results = []
+        
+        # Get industry-specific licenses
+        if industry.lower() in self.compliance_data.get("industries", {}):
+            industry_data = self.compliance_data["industries"][industry.lower()]
+            licenses = industry_data.get("licenses", [])
+            results.extend(licenses)
+        
+        # Get entity-specific registrations
+        entity_key = entity_type.lower().replace(" ", "_")
+        if entity_key in self.compliance_data.get("entity_types", {}):
+            entity_data = self.compliance_data["entity_types"][entity_key]
+            registrations = entity_data.get("registrations", [])
+            
+            # Convert registrations to license format
+            for reg in registrations:
+                results.append({
+                    "name": reg["name"],
+                    "mandatory": reg.get("mandatory", False),
+                    "description": reg.get("description", ""),
+                    "documents": reg.get("documents", []),
+                    "type": "registration"
+                })
+        
+        return results
+    
+    def get_tax_info(self, entity_type, turnover=""):
+        """Get taxation information"""
+        entity_key = entity_type.lower().replace(" ", "_")
+        if entity_key in self.compliance_data.get("entity_types", {}):
+            return self.compliance_data["entity_types"][entity_key].get("taxation", {})
+        return {}
+    
+    def get_deadlines(self):
+        """Get important compliance deadlines"""
+        return self.compliance_data.get("deadlines", {})
+    
+    def get_location_specific(self, location, industry):
+        """Get location-specific requirements"""
+        location_key = location.lower()
+        if location_key in self.compliance_data.get("locations", {}):
+            location_data = self.compliance_data["locations"][location_key]
+            return location_data.get("specific_requirements", {}).get(industry.lower(), [])
+        return []
+
+class ComplianceChatbot:
+    """Optimized RAG-based compliance chatbot with web search integration"""
+    def __init__(self):
+        self.knowledge_retriever = KnowledgeRetriever()
+        self.system_prompt = """You are BizComply, an expert Business Compliance Assistant for India.
+        
+Your Rules:
+1. Never guess laws. Use only verified information from the knowledge base.
+2. Be Simple. Explain legal terms like you're talking to a 5th grader.
+3. Be Proactive. Always suggest the next logical step.
+4. Keep answers short. Use bullet points and markdown formatting.
+5. Focus on practical, actionable advice."""
+        
+        # Initialize RAG components
+        try:
+            self.embedding_model = EmbeddingProvider.get_embedding_model()
+            self.document_processor = DocumentProcessor()
+            self.rag_enabled = True
+        except Exception as e:
+            print(f"RAG initialization failed: {e}")
+            self.rag_enabled = False
+        
+        # Initialize Web Search
+        try:
+            self.web_search = WebSearch()
+            self.web_search_enabled = WEB_SEARCH_ENABLED
+        except Exception as e:
+            print(f"Web search initialization failed: {e}")
+            self.web_search_enabled = False
+    
+    def process_message(self, user_message, conversation_state, response_mode="simple"):
+        """Optimized message processing with fast response"""
+        # Check if user is in onboarding
+        if conversation_state.current_step == "onboarding":
+            return self._handle_onboarding_fast(user_message, conversation_state)
+        
+        # Main chat with optimized keyword matching
+        return self._handle_main_chat_fast(user_message, conversation_state, response_mode)
+    
+    def _handle_onboarding_fast(self, message, state):
+        """
+        Fast onboarding with explicit step handling.
+        """
+        
+        # --- STEP 1: SAVE THE INCOMING ANSWER ---
+        # We look at what is currently MISSING to decide what the user is answering.
+        
+        if "location" not in state.completed_questions:
+            # The user just answered the Location question
+            state.update_profile("location", message)
+            
+        elif "entity_type" not in state.completed_questions:
+            # The user just answered the Entity Type question
+            state.update_profile("entity_type", message)
+            
+        elif "industry" not in state.completed_questions:
+            # The user just answered the Industry question
+            state.update_profile("industry", message)
+
+        # --- STEP 2: DECIDE THE NEXT QUESTION ---
+        # Now that we've saved the answer, check what is STILL missing.
+
+        if "entity_type" not in state.completed_questions:
+            return "### What type of business entity is it?\n\n- Sole Proprietorship\n- Partnership Firm\n- LLP\n- Private Limited\n- OPC"
+            
+        elif "industry" not in state.completed_questions:
+            return "### What industry are you in?\n\n- Food Service\n- Retail\n- IT Services\n- Manufacturing\n- Education\n- Healthcare\n- Other"
+            
+        else:
+            # If everything is answered, switch to main chat
+            state.current_step = "main_chat"
+            return f"✅ **Great! I have all your information.**\n\n**Business Profile:**\n- Location: {state.user_profile['location']}\n- Entity Type: {state.user_profile['entity_type']}\n- Industry: {state.user_profile['industry']}\n\nNow I can provide specific compliance guidance. What would you like to know?"
+    
+    def _search_documents(self, query: str, k: int = 3) -> List[str]:
+        """Search documents using RAG embeddings"""
+        if not self.rag_enabled:
+            return []
+        
+        try:
+            # Generate query embedding
+            query_embedding = self.embedding_model.embed_query(query)
+            
+            # Search through documents (simplified - in production you'd use a vector store)
+            documents = self.document_processor.load_documents()
+            relevant_docs = []
+            
+            for doc in documents:
+                # Simple similarity check (in production, use proper vector similarity)
+                if any(word.lower() in doc.content.lower() for word in query.split()[:3]):
+                    relevant_docs.append(doc.content[:500])  # Return first 500 chars
+            
+            return relevant_docs[:k]
+            
+        except Exception as e:
+            print(f"Document search error: {e}")
+            return []
+    
+    def _perform_web_search(self, query: str) -> List[Dict[str, str]]:
+        """Perform web search for current information"""
+        if not self.web_search_enabled:
+            return []
+        
+        try:
+            results = self.web_search.search(query, num_results=3)
+            return results
+        except Exception as e:
+            print(f"Web search error: {e}")
+            return []
+    
+    def _format_response(self, response: str, mode: str = "simple") -> str:
+        """Format response based on mode (concise/detailed)"""
+        if mode == "concise":
+            # Make response shorter and more direct
+            lines = response.split('\n')
+            essential_lines = []
+            for line in lines:
+                if line.strip() and not line.startswith('**Next Step:'):
+                    essential_lines.append(line)
+                if len(essential_lines) >= 3:  # Limit to 3 key points
+                    break
+            return '\n'.join(essential_lines)
+        elif mode == "detailed":
+            # Add more detail and explanations
+            return response + "\n\n**Additional Information:**\n- For specific legal advice, consult with a compliance expert.\n- Regulations may vary based on your specific circumstances.\n- Always verify current requirements with relevant authorities."
+        else:
+            return response
+    
+    def _handle_main_chat_fast(self, message, state, response_mode="simple"):
+        profile = state.user_profile
+        message_lower = message.lower()
+        
+        # --- LOGIC PATCH: Check if user is asking about a different entity ---
+        # Create temporary profile if user mentions a specific entity type
+        temp_profile = profile.copy()
+        
+        if "one person company" in message_lower or "opc" in message_lower:
+            temp_profile['entity_type'] = "One Person Company"
+        elif "private limited" in message_lower or "pvt ltd" in message_lower:
+            temp_profile['entity_type'] = "Private Limited Company"
+        elif "llp" in message_lower or "limited liability partnership" in message_lower:
+            temp_profile['entity_type'] = "LLP"
+        elif "sole proprietor" in message_lower or "proprietorship" in message_lower:
+            temp_profile['entity_type'] = "Sole Proprietorship"
+        elif "partnership firm" in message_lower or "partnership" in message_lower:
+            temp_profile['entity_type'] = "Partnership Firm"
+        
+        # Try RAG engine first if available and user is past onboarding
+        if self.rag_enabled and state.current_step == "main_chat":
+            try:
+                # Search documents first
+                doc_results = self._search_documents(message)
+                if doc_results:
+                    context = "\n".join(doc_results)
+                    rag_response = f"Based on compliance documents:\n{context}\n\n{self._handle_main_chat_fallback(message, temp_profile)}"
+                    return self._format_response(rag_response, response_mode)
+            except Exception as e:
+                print(f"RAG engine error: {e}")
+        
+        # Try web search for current information
+        if self.web_search_enabled and ("latest" in message_lower or "current" in message_lower or "new" in message_lower):
+            try:
+                web_results = self._perform_web_search(message)
+                if web_results:
+                    web_context = "\n".join([f"**{result['title']}** ({result['source']})\n{result['snippet']}" for result in web_results])
+                    web_response = f"Based on current information:\n{web_context}\n\n{self._handle_main_chat_fallback(message, temp_profile)}"
+                    return self._format_response(web_response, response_mode)
+            except Exception as e:
+                print(f"Web search error: {e}")
+        
+        # Fallback to keyword-based responses for common queries
+        base_response = self._handle_main_chat_fallback(message, temp_profile)
+        return self._format_response(base_response, response_mode)
+    
+    def _handle_main_chat_fallback(self, message, profile):
+        message_lower = message.lower()
+        # License queries (use temp_profile for entity-specific answers)
+        if any(keyword in message_lower for keyword in ["license", "registration", "permit"]):
+            return self._handle_license_query_fast(message, profile)
+        # Tax queries (use temp_profile for entity-specific answers)
+        elif any(keyword in message_lower for keyword in ["tax", "gst", "tds", "income tax"]):
+            return self._handle_tax_query_fast(message, profile)
+        # Deadline queries
+        elif any(keyword in message_lower for keyword in ["deadline", "due date", "when"]):
+            return self._handle_deadline_query_fast(message, profile)
+        # Compliance status (use original profile)
+        elif any(keyword in message_lower for keyword in ["compliance", "check", "status"]):
+            return self._handle_compliance_status_fast(profile)
+        # Startup guidance
+        elif any(keyword in message_lower for keyword in ["start", "begin", "setup", "new"]):
+            return self._handle_startup_guide_fast(profile)
+        # Legal document queries (use RAG if available, otherwise fallback)
+        elif any(keyword in message_lower for keyword in ["section", "act", "law", "legal", "punishment", "fraud", "director", "duties"]):
+            if RAG_AVAILABLE:
+                try:
+                    rag_response = get_compliance_answer(message)
+                    return rag_response['result']
+                except Exception as e:
+                    return f"I am having trouble reading the legal documents right now. Please check my API connection. Error: {str(e)}"
+            else:
+                return self._provide_general_guidance_fast(message, profile)
+        # General guidance (use temp_profile)
+        else:
+            return self._provide_general_guidance_fast(message, profile)
+    
+    def _handle_license_query_fast(self, message, profile):
+        """Fast license query with pre-built responses"""
+        industry_key = profile.get("industry", "").lower().replace(" ", "_")
+        entity_key = profile.get("entity_type", "").lower().replace(" ", "_")
+        
+        # Pre-built responses for common combinations
+        if "food" in industry_key:
+            return """### Required Licenses for Food Service Business:
+
+**Mandatory Licenses:**
+- [ ] **FSSAI State License**
+  - Required for any food handling business
+  - Timeline: 30-60 days | Cost: ₹100-5,000
+  - Documents: ID Proof, Kitchen Blueprint, Address Proof
+
+- [ ] **Health Trade License**
+  - Local municipal license
+  - Timeline: 15-30 days | Cost: ₹500-2,000
+  - Documents: Application Form, Address Proof
+
+**Optional:**
+- [ ] **GST Registration** (if turnover > ₹20 Lakhs)
+  - Timeline: 3-7 days | Cost: Free
+
+**Next Step:** Would you like the step-by-step application process for FSSAI license?"""
+        
+        elif "retail" in industry_key:
+            return """### Required Licenses for Retail Business:
+
+**Mandatory:**
+- [ ] **Shop & Establishment Act Registration**
+  - Must be obtained within 30 days of starting
+  - Timeline: 7-15 days | Cost: ₹300-1,000
+  - Documents: Application Form, Address Proof, ID Proof
+
+**Optional:**
+- [ ] **GST Registration** (if turnover > ₹40 Lakhs)
+  - Timeline: 3-7 days | Cost: Free
+
+**Next Step:** Need help with the Shop Act registration process?"""
+        
+        elif "it" in industry_key or "software" in industry_key:
+            return """### Requirements for IT Services Business:
+
+**Mandatory:**
+- [ ] **Shop & Establishment Act Registration**
+  - Basic registration for all businesses
+
+**Optional but Recommended:**
+- [ ] **GST Registration** (if turnover > ₹20 Lakhs)
+  - Timeline: 3-7 days | Cost: Free
+  - Documents: PAN, Address Proof, Bank Details
+
+- [ ] **MSME Registration**
+  - Benefits: Collateral-free loans, subsidies
+  - Cost: Free
+
+**Next Step:** Would you like to know about MSME registration benefits?"""
+        
+        elif "opc" in entity_key or "one person" in entity_key:
+            return """### Requirements for One Person Company (OPC):
+
+**Mandatory Registrations:**
+- [ ] **Company Incorporation (MCA)**
+  - Required: DIN, DSC, Name Approval
+  - Timeline: 10-15 days | Cost: ₹3,000-6,000
+  - Documents: Director documents, Address proof
+
+- [ ] **PAN & TAN**
+  - Company PAN and Tax Deduction Account Number
+  - Timeline: 7-10 days | Cost: ₹107 + ₹64
+
+**Compliance Requirements:**
+- [ ] **Annual Filings**: MCA forms, Financial statements
+- [ ] **Board Meetings**: Required annually
+- [ ] **GST Registration** (if turnover > ₹20 Lakhs)
+
+**Next Step:** Would you like the OPC incorporation process details?"""
+        
+        else:
+            return f"""### Business Licenses for {profile.get('entity_type', 'Your Business')}:
+
+**Basic Requirements:**
+- [ ] **Shop & Establishment Act Registration** (mandatory)
+- [ ] **PAN Card** (if not already obtained)
+- [ ] **Business Bank Account**
+
+**Industry-Specific:**
+Please check with local authorities for {profile.get('industry', 'your industry')} specific requirements.
+
+**Next Step:** Would you like help with PAN card application process?"""
+    
+    def _handle_tax_query_fast(self, message, profile):
+        """Fast tax query with accurate information"""
+        entity_type = profile.get("entity_type", "").lower()
+        
+        if "sole proprietor" in entity_type:
+            return """### Tax Requirements for Sole Proprietorship:
+
+**Income Tax:**
+- Tax Rate: Individual slabs (0% to 30%)
+- Due Date: 31st July (individuals)
+- Penalty: ₹5,000 for late filing
+
+**GST:**
+- Threshold: ₹20 Lakhs (services) / ₹40 Lakhs (goods)
+- Registration: Free if turnover below threshold
+
+**TDS:**
+- Applicable if: Rent > ₹50,000/month or Professional fees > ₹30,000
+- Rate: 10% for rent and professional fees
+
+**Next Step:** Would you like the GST registration process?"""
+        
+        elif "private limited" in entity_type or "company" in entity_type:
+            return """### Tax Requirements for Private Limited Company:
+
+**Income Tax:**
+- Tax Rate: 25% (up to ₹400 Cr turnover) / 22% (new companies)
+- Due Date: 30th September
+- Mandatory: Statutory audit required
+
+**GST:**
+- Threshold: ₹20 Lakhs (services) / ₹40 Lakhs (goods)
+- Registration: Mandatory for companies
+
+**TDS:**
+- Rate: 1% (individual contractors) / 2% (companies)
+- Due Date: 7th of next month
+
+**Next Step:** Need help with company incorporation process?"""
+        
+        elif "llp" in entity_type or "partnership" in entity_type:
+            return """### Tax & Compliance Filings for LLP:
+
+**1. MCA Filings (Ministry of Corporate Affairs):**
+- [ ] **Form 11 (Annual Return):** Due 30th May.
+  - *Penalty:* ₹100 per day of delay (No upper limit!).
+- [ ] **Form 8 (Account & Solvency):** Due 30th October.
+  - *Penalty:* ₹100 per day of delay.
+
+**2. Income Tax:**
+- [ ] **ITR-5:** Due 31st July (if no audit) or 31st October (if audit required).
+- *Audit Applicability:* If turnover > ₹40 Lakhs or Contribution > ₹25 Lakhs.
+
+**3. GST (If registered):**
+- [ ] **GSTR-1 & 3B:** Monthly returns (11th & 20th).
+
+**Next Step:** Would you like to check if your LLP needs a mandatory audit?"""
+        
+        else:
+            return f"""### Tax Information for {profile.get('entity_type', 'Your Business')}:
+
+**Key Points:**
+- Consult a tax professional for specific advice
+- Maintain proper bookkeeping
+- File returns on time to avoid penalties
+- Consider tax planning for savings
+
+**Common Deadlines:**
+- Income Tax: 31st July (individuals)
+- GST Returns: 20th of next month
+- TDS Returns: 7th of next month
+
+**Next Step:** Would you like tax planning tips?"""
+    
+    def _handle_deadline_query_fast(self, message, profile):
+        """Fast deadline information"""
+        return """### Important Compliance Deadlines:
+
+**Monthly:**
+- [ ] **GST Return GSTR-1** - 11th of next month
+- [ ] **GST Return GSTR-3B** - 20th of next month
+- [ ] **TDS Return** - 7th of next month
+
+**Quarterly:**
+- [ ] **TDS Return** - 31st of quarter end
+
+**Annual:**
+- [ ] **Income Tax Return** - 31st July (individuals)
+- [ ] **GST Annual Return** - 31st December
+- [ ] **Shop License Renewal** - Before expiry date
+
+**Penalties:**
+- GST: ₹50 per day delay
+- TDS: ₹200 per day delay
+- Income Tax: ₹5,000 for late filing
+
+**Next Step:** Would you like a personalized deadline calendar for your business?"""
+    
+    def _handle_compliance_status_fast(self, profile):
+        """Fast compliance status check"""
+        return f"""### Compliance Status for Your Business:
+
+**Business Profile:**
+- Type: {profile.get('entity_type', 'Not specified')}
+- Industry: {profile.get('industry', 'Not specified')}
+- Location: {profile.get('location', 'Not specified')}
+
+**Priority Actions:**
+1. **Complete Business Registration** (if not done)
+2. **Obtain Shop & Establishment License**
+3. **Register for GST** (if applicable)
+4. **Open Business Bank Account**
+5. **Maintain Proper Records**
+
+**Compliance Score:** Setup Phase (0-25%)
+
+**Next Steps:**
+- Focus on mandatory registrations first
+- Set up accounting system
+- Create compliance calendar
+
+**Next Step:** Would you like a detailed compliance checklist?"""
+    
+    def _handle_startup_guide_fast(self, profile):
+        """Fast startup guidance"""
+        return """### Quick Startup Guide:
+
+**Phase 1: Basic Setup (Week 1-2)**
+- [ ] Register business name
+- [ ] Get PAN card (if needed)
+- [ ] Open business bank account
+- [ ] Register for Shop & Establishment Act
+
+**Phase 2: Tax Registration (Week 2-3)**
+- [ ] GST registration (if turnover > threshold)
+- [ ] TAN registration (if required)
+- [ ] Professional tax registration
+
+**Phase 3: Industry Licenses (Week 3-6)**
+- [ ] Industry-specific licenses
+- [ ] Municipal permits
+- [ ] Safety registrations
+
+**Phase 4: Ongoing Compliance**
+- [ ] Monthly GST returns
+- [ ] Quarterly TDS returns
+- [ ] Annual compliance filings
+
+**Next Step:** Which phase would you like detailed guidance for?"""
+    
+    def _provide_general_guidance_fast(self, message, profile):
+        """Fast general guidance"""
+        return f"""### Business Compliance Guidance:
+
+**For {profile.get('entity_type', 'Your Business')} in {profile.get('industry', 'Your Industry')}:
+
+**Immediate Actions:**
+1. **Business Registration** - Complete legal formalities
+2. **Tax Registration** - GST, PAN, TAN as applicable
+3. **Bank Account** - Separate business account
+4. **Licenses** - Industry-specific permits
+
+**Common Requirements:**
+- Shop & Establishment Act (most businesses)
+- GST (if turnover exceeds threshold)
+- Professional tax (some states)
+- Industry licenses (varies by sector)
+
+**Timeline:** Most registrations take 2-4 weeks
+
+**Cost:** ₹1,000-10,000 for basic setup
+
+**Next Step:** Would you like specific guidance for any of these areas?"""
+    
+    # Keep the existing detailed methods as fallbacks
+    def _handle_license_query(self, message, profile):
+        """Handle license-related queries"""
+        licenses = self.knowledge_retriever.search_licenses(
+            profile["industry"], 
+            profile["entity_type"], 
+            profile["location"]
+        )
+        
+        if not licenses:
+            return "I couldn't find specific license requirements for your business type. Please consult with a local compliance expert."
+        
+        response = f"### Required Licenses for {profile['entity_type']} in {profile['industry']}:\n\n"
+        
+        mandatory_licenses = [l for l in licenses if l.get("mandatory", False)]
+        optional_licenses = [l for l in licenses if not l.get("mandatory", False)]
+        
+        if mandatory_licenses:
+            response += "**Mandatory Licenses:**\n"
+            for license in mandatory_licenses:
+                response += f"- [ ] **{license['name']}**\n"
+                response += f"  - {license.get('description', '')}\n"
+                if license.get('documents'):
+                    response += f"  - Documents: {', '.join(license['documents'])}\n"
+                if license.get('timeline'):
+                    response += f"  - Timeline: {license.get('timeline', 'N/A')}\n"
+                if license.get('cost'):
+                    response += f"  - Cost: {license.get('cost', 'N/A')}\n"
+                response += "\n"
+        
+        if optional_licenses:
+            response += "**Optional Registrations:**\n"
+            for license in optional_licenses:
+                response += f"- [ ] **{license['name']}**\n"
+                response += f"  - {license.get('description', '')}\n"
+                response += "\n"
+        
+        response += "\n**Next Step:** Would you like me to explain the application process for any of these licenses?"
+        
+        return response
+    
+    def _handle_tax_query(self, message, profile):
+        """Handle tax-related queries"""
+        tax_info = self.knowledge_retriever.get_tax_info(profile["entity_type"])
+        
+        if not tax_info:
+            return "I couldn't find specific tax information for your business type. Please consult with a tax professional."
+        
+        response = f"### Tax Requirements for {profile['entity_type']}:\n\n"
+        
+        if "gst_threshold" in tax_info:
+            response += f"**GST Registration Threshold:** {tax_info['gst_threshold']}\n\n"
+        
+        if "income_tax" in tax_info:
+            response += f"**Income Tax:** {tax_info['income_tax']}\n\n"
+        
+        if "tds_applicability" in tax_info:
+            response += f"**TDS Applicability:** {tax_info['tds_applicability']}\n\n"
+        
+        response += "**Next Step:** Would you like to know about the tax filing deadlines?"
+        
+        return response
+    
+    def _handle_deadline_query(self, message, profile):
+        """Handle deadline queries"""
+        deadlines = self.knowledge_retriever.get_deadlines()
+        
+        if not deadlines:
+            return "I couldn't find specific deadline information. Please check with your compliance advisor."
+        
+        response = "### Important Compliance Deadlines:\n\n"
+        
+        for period, items in deadlines.items():
+            response += f"**{period.title()} Deadlines:**\n"
+            for item in items:
+                response += f"- [ ] **{item['name']}** - **{item['date']}**\n"
+                response += f"  - Penalty: {item.get('penalty', 'N/A')}\n"
+            response += "\n"
+        
+        return response
+    
+    def _handle_compliance_status(self, profile):
+        """Handle compliance status queries"""
+        licenses = self.knowledge_retriever.search_licenses(
+            profile["industry"], 
+            profile["entity_type"], 
+            profile["location"]
+        )
+        
+        mandatory_count = len([l for l in licenses if l.get("mandatory", False)])
+        total_count = len(licenses)
+        
+        response = f"### Compliance Status for {profile.get('business_name', 'Your Business')}\n\n"
+        response += f"**Business Type:** {profile['entity_type']}\n"
+        response += f"**Industry:** {profile['industry']}\n"
+        response += f"**Location:** {profile['location']}\n\n"
+        
+        response += f"**Required Items:** {mandatory_count} mandatory, {total_count - mandatory_count} optional\n\n"
+        
+        response += "**Next Steps:**\n"
+        response += "1. Complete all mandatory registrations\n"
+        response += "2. Set up tax registrations\n"
+        response += "3. Apply for required licenses\n"
+        response += "4. Set up compliance calendar\n\n"
+        
+        response += "**Would you like me to create a detailed compliance checklist for your business?**"
+        
+        return response
+    
+    def _provide_general_guidance(self, message, profile):
+        """Provide general compliance guidance"""
+        response = "### Business Compliance Guidance\n\n"
+        
+        response += f"Based on your {profile['entity_type']} in the {profile['industry']} industry, here are the key areas to focus on:\n\n"
+        
+        response += "**Priority 1: Basic Registrations**\n"
+        response += "- Business name registration\n"
+        response += "- Tax registrations (PAN, GST if applicable)\n"
+        response += "- Shop & Establishment Act registration\n\n"
+        
+        response += "**Priority 2: Industry-Specific Licenses**\n"
+        response += "- Check if your industry requires special permits\n"
+        response += "- Professional certifications if applicable\n\n"
+        
+        response += "**Priority 3: Ongoing Compliance**\n"
+        response += "- Monthly/Quarterly tax filings\n"
+        response += "- Annual returns\n"
+        response += "- License renewals\n\n"
+        
+        response += "**Next Step:** Would you like specific details about any of these areas?"
+        
+        return response
+
+# Placeholder ComplianceEngine class
+class ComplianceEngine:
+    """Simple placeholder for ComplianceEngine"""
+    def __init__(self):
+        self.initialized = True
+        self.profiles = {}  # Simple in-memory storage
+    
+    def get_requirements(self, business_type, jurisdiction):
+        """Get compliance requirements for business type and jurisdiction"""
+        return []
+    
+    def check_compliance(self, business_profile):
+        """Check compliance status for a business profile"""
+        return {"status": "compliant", "issues": []}
+    
+    def get_business_profile(self, business_id):
+        """Get business profile by ID"""
+        return self.profiles.get(business_id, None)
+    
+    def save_business_profile(self, business_id, profile):
+        """Save business profile"""
+        self.profiles[business_id] = profile
+        return profile
+
+def load_modern_css():
+    """Load modern, ChatGPT-style CSS"""
     st.markdown("""
     <style>
-    /* Modern Enterprise Sidebar - Exact Color Palette */
-    
-    /* CSS Variables for Enterprise Theme */
+    /* Modern UI Tokens */
     :root {
-        --sidebar-bg: #0F172A;
-        --sidebar-bg-hover: #1E293B;
-        --sidebar-bg-active: #0EA5E9;
-        
-        --sidebar-text: #F8FAFC;
-        --sidebar-text-secondary: #94A3B8;
-        --sidebar-text-muted: #64748B;
-        
-        --sidebar-border: #1B2537;
-        
-        --sidebar-convo-inactive: #1E293B;
-        --sidebar-convo-hover: #334155;
-        --sidebar-convo-active-bg: #0EA5E9;
-        --sidebar-convo-active-text: #FFFFFF;
-        
-        --sidebar-button-bg: #1E293B;
-        --sidebar-button-bg-hover: #2C3446;
-        --sidebar-button-border: #334155;
-        --sidebar-button-text: #F8FAFC;
-        
-        --accent: #0EA5E9;
+        --primary: #2563EB;
+        --primary-dark: #1D4ED8;
+        --background: #FFFFFF;
+        --surface: #FFFFFF;
+        --text-primary: #1C1C1C;
+        --text-secondary: #6B7280;
+        --border: #E5E7EB;
+        --sidebar-bg: #F8F9FA;
+        --shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
+        --shadow-lg: 0 10px 40px rgba(0,0,0,0.15);
+        --radius: 12px;
+        --radius-sm: 8px;
     }
     
-    /* 1. App Background */
+    /* Global Typography & Spacing */
+    body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif !important;
+        font-size: 15px !important;
+        line-height: 1.6 !important;
+        color: var(--text-primary) !important;
+        background-color: #FFFFFF !important;
+    }
+    
     .stApp {
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        background-color: #F8FAFC;
-        color: #0F172A;
+        background-color: #FFFFFF !important;
     }
     
-    /* 2. Modern Enterprise Sidebar */
-    .stSidebar {
-        background-color: var(--sidebar-bg) !important;
-        border-right: none !important;
-    }
-    
-    .stSidebar .element-container {
-        background-color: transparent !important;
-        border: none !important;
-        padding: 0 !important;
-        margin: 0 !important;
-    }
-    
-    .sidebar-header {
-        background-color: transparent;
-        color: var(--sidebar-text);
-        padding: 24px;
-        margin: -16px -16px 24px -16px;
-        border-bottom: 1px solid var(--sidebar-border);
-    }
-    
-    .sidebar-header h1 {
-        margin: 0;
-        font-size: 1.5rem;
-        font-weight: 600;
-        color: var(--sidebar-text);
-    }
-    
-    .sidebar-header p {
-        margin: 4px 0 0 0;
-        font-size: 0.875rem;
-        color: var(--sidebar-text-secondary);
-    }
-    
-    .sidebar-section {
-        margin-bottom: 24px;
-        padding: 0 16px;
-    }
-    
-    .sidebar-section-title {
-        font-size: 0.75rem;
-        font-weight: 500;
-        color: var(--sidebar-text-secondary);
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        margin-bottom: 12px;
-        padding: 0 4px;
-    }
-    
-    /* New Conversation Button - Enterprise Style */
-    .new-conversation-btn {
-        background-color: var(--sidebar-button-bg);
-        color: var(--sidebar-button-text);
-        border: 1px solid var(--sidebar-button-border);
-        border-radius: 6px;
-        padding: 12px;
-        margin-bottom: 20px;
-        width: 100%;
-        font-weight: 500;
-        cursor: pointer;
-        transition: all 0.15s ease;
-        font-size: 0.875rem;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-    }
-    
-    .new-conversation-btn:hover {
-        background-color: var(--sidebar-button-bg-hover);
-        border-color: #3B4457;
-    }
-    
-    .new-conversation-btn .icon {
-        color: var(--accent);
-    }
-    
-    /* Recent Conversations - Enterprise Style */
-    .conversation-item {
-        border-radius: 6px;
-        padding: 12px;
-        margin-bottom: 8px;
-        cursor: pointer;
-        transition: all 0.15s ease;
-        border: none;
-    }
-    
-    .conversation-item.inactive {
-        background-color: var(--sidebar-convo-inactive);
-        color: var(--sidebar-text);
-    }
-    
-    .conversation-item.inactive:hover {
-        background-color: var(--sidebar-convo-hover);
-    }
-    
-    .conversation-item.active {
-        background-color: var(--sidebar-convo-active-bg);
-        color: var(--sidebar-convo-active-text);
-    }
-    
-    .conversation-item.active:hover {
-        background-color: var(--accent);
-    }
-    
-    .conversation-title {
-        font-weight: 500;
-        margin-bottom: 4px;
-        line-height: 1.4;
-        font-size: 0.875rem;
-    }
-    
-    .conversation-meta {
-        font-size: 0.75rem;
-        opacity: 0.8;
-    }
-    
-    /* Sidebar Stats Section - Enterprise Style */
-    .stats-grid {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 8px;
-        border-top: 1px solid rgba(255,255,255,0.06);
-        padding-top: 16px;
-        margin-top: 16px;
-    }
-    
-    .stat-item {
-        background-color: transparent;
-        border-radius: 6px;
-        padding: 12px;
-        text-align: center;
-    }
-    
-    .stat-value {
-        font-size: 1.25rem;
-        font-weight: 600;
-        color: #F1F5F9;
-        margin-bottom: 2px;
-    }
-    
-    .stat-label {
-        font-size: 0.625rem;
-        color: var(--sidebar-text-secondary);
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-    }
-    
-    /* 3. Top Header */
-    .main-header {
-        background-color: #FFFFFF;
-        padding: 24px;
-        margin-bottom: 24px;
-        border-bottom: 1px solid #E2E8F0;
-    }
-    
-    .main-header h1 {
-        margin: 0;
-        font-size: 2rem;
-        font-weight: 600;
-        color: #0F172A;
-    }
-    
-    .main-header p {
-        margin: 4px 0 0 0;
-        color: #475569;
-        font-size: 0.875rem;
-    }
-    
-    /* 5. KPI Cards */
-    .metric-box {
-        background-color: #FFFFFF;
-        border: 1px solid #E2E8F0;
-        border-radius: 8px;
-        padding: 20px;
-        text-align: center;
-        transition: all 0.15s ease;
-    }
-    
-    .metric-box:hover {
-        border-color: var(--accent);
-        box-shadow: 0 1px 3px rgba(14, 165, 233, 0.1);
-    }
-    
-    .metric-value {
-        font-size: 2rem;
-        font-weight: 600;
-        color: #0F172A;
-        margin-bottom: 4px;
-    }
-    
-    .metric-label {
-        font-size: 0.75rem;
-        color: #64748B;
-        margin-bottom: 6px;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        font-weight: 500;
-    }
-    
-    .metric-trend {
-        font-size: 0.75rem;
-        font-weight: 500;
-    }
-    
-    .metric-trend.positive {
-        color: #16A34A;
-    }
-    
-    .metric-trend.negative {
-        color: #DC2626;
-    }
-    
-    /* 6. User Message Bubble */
-    .user-message {
-        background-color: #F1F5F9;
-        color: #0F172A;
-        border: 1px solid #E2E8F0;
-        padding: 16px;
-        margin: 12px 0;
-        border-radius: 8px;
-        max-width: 80%;
-        margin-left: auto;
-        line-height: 1.6;
-        font-size: 0.875rem;
-    }
-    
-    /* 7. Assistant Message Bubble */
-    .assistant-message {
-        background-color: #FFFFFF;
-        color: #0F172A;
-        border: 1px solid #E2E8F0;
-        padding: 16px;
-        margin: 12px 0;
-        border-radius: 8px;
-        max-width: 80%;
-        line-height: 1.6;
-        font-size: 0.875rem;
-    }
-    
-    .assistant-message strong {
-        color: #475569;
-    }
-    
-    /* 8. PERFECT CENTERED CHAT INPUT BAR */
-    .chat-input-container {
-        background-color: #111418;
-        padding: 24px 32px; /* Outer container: py-6 px-8 */
-        position: fixed;
-        bottom: 0;
-        left: 0;
-        right: 0;
-        z-index: 999;
-    }
-    
-    .chat-input-wrapper {
-        display: flex; /* Flex container */
-        align-items: center; /* Vertically center children */
-        width: 80%; /* Make the gray box narrower */
-        max-width: 800px; /* Smaller max-width */
-        margin: 0 auto; /* Center the gray box in black container */
-        background-color: #2A2D33;
-        border-radius: 9999px; /* rounded-full */
-        border: 1px solid #3A3D45;
-        padding: 12px 16px; /* Symmetric wrapper padding */
-        overflow: hidden; /* Button visually sits inside the pill */
-        box-sizing: border-box;
-        height: 56px; /* Fixed height for perfect centering */
-    }
-    
-    .chat-input-field {
-        flex: 1; /* Expand properly */
-        background-color: transparent;
-        color: #E5E7EB; /* text-gray-200 */
-        border: none;
-        outline: none;
-        padding: 0; /* Remove padding to let flex handle centering */
-        margin: 0 14px 0 16px; /* Margin instead of padding: Left: 16px (more right), Right: 14px */
-        font-size: 0.875rem;
-        font-family: inherit;
-        line-height: 1; /* Prevent line-height from affecting centering */
-        height: 100%; /* Take full height of wrapper */
-        display: flex; /* Flex to center text */
-        align-items: center; /* Vertically center text */
-        box-sizing: border-box;
-    }
-    
-    .chat-input-field::placeholder {
-        color: #9CA3AF; /* placeholder-gray-400 */
-    }
-    
-    .chat-send-button {
-        width: 40px; /* Fixed size */
-        height: 40px; /* Fixed size */
-        margin-left: 12px; /* Fixed margin-left */
-        background-color: #FFFFFF;
-        border-radius: 9999px; /* rounded-full */
-        padding: 8px; /* Inner padding */
-        border: none;
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05); /* shadow-sm */
-        transition: all 0.15s ease;
-        flex-shrink: 0; /* Don't shrink */
-        box-sizing: border-box;
-    }
-    
-    .chat-send-button:hover {
-        background-color: #F8FAFC;
-        transform: scale(1.05);
-    }
-    
-    .chat-send-button:active {
-        transform: scale(0.95);
-    }
-    
-    .send-icon {
-        width: 16px; /* w-4 */
-        height: 16px; /* h-4 */
-        color: #0F172A;
-    }
-    
-    /* Add bottom padding to main content to avoid overlap with fixed input */
-    .main-content {
-        padding-bottom: 120px; /* Space for fixed input bar */
-    }
-    
-    /* Quick Actions */
-    .quick-actions {
-        background-color: #FFFFFF;
-        padding: 24px;
-        border-radius: 8px;
-        border: 1px solid #E2E8F0;
-        margin: 24px 0;
-    }
-    
-    .quick-actions h3 {
-        margin-top: 0;
-        color: #0F172A;
-        font-size: 1.125rem;
-        font-weight: 600;
-    }
-    
-    .quick-actions p {
-        color: #475569;
-        margin-bottom: 16px;
-        font-size: 0.875rem;
-    .action-buttons {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 12px;
-    }
-```
-
-to 
-
-```python
-    }
-    
-    .action-buttons {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 16px;
-    }
-```
-
-Here is the full code after making the change:
-
-```python
-    
-    .action-btn {
-        background-color: #FFFFFF;
-        border: 1px solid #E2E8F0;
-        border-radius: 6px;
-        padding: 12px;
-        text-align: left;
-        cursor: pointer;
-        transition: all 0.15s ease;
-        font-size: 0.875rem;
-        color: #0F172A;
-    }
-    
-    .action-btn:hover {
-        background-color: #F1F5F9;
-        border-color: var(--accent);
-    }
-    
-    /* Sidebar-specific styles */
+    /* Modern Sidebar */
     .css-1d391kg {
         background-color: var(--sidebar-bg) !important;
-        border-right: none !important;
-        width: 320px !important;
-        min-width: 320px !important;
-        max-width: 320px !important;
+        border-right: 1px solid var(--border) !important;
+        width: 300px !important;
+        min-width: 300px !important;
+        max-width: 300px !important;
+        box-shadow: var(--shadow) !important;
     }
     
-    .css-1d391kg > div {
-        padding: 0 !important;
-        background-color: transparent !important;
-    }
-    
-    /* COMPLETE SIDEBAR RESET - Remove all styling first EXCEPT header */
-    .css-1d391kg *:not(.sidebar-header):not(.sidebar-header *):not(h1):not(p) {
-        background-color: transparent !important;
-        border: none !important;
+    /* Modern Header */
+    .css-1d391kg .sidebar-header,
+    div[data-testid="stSidebar"] .sidebar-header {
+        padding: 24px 20px !important;
         margin: 0 !important;
-        padding: 0 !important;
+        border-bottom: 1px solid var(--border) !important;
+        background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%) !important;
     }
     
-    /* MAXIMUM SPECIFICITY - Override everything */
     .css-1d391kg .sidebar-header h1,
     .css-1d391kg .sidebar-header p,
-    .css-1d391kg div[data-testid="stVerticalBlock"] > div > div > div h1,
-    .css-1d391kg div[data-testid="stVerticalBlock"] > div > div > div p,
-    .css-1d391kg > div > div > div > div > div > div h1,
-    .css-1d391kg > div > div > div > div > div > div p,
     div[data-testid="stSidebar"] .sidebar-header h1,
-    div[data-testid="stSidebar"] .sidebar-header p,
-    div[data-testid="stSidebar"] h1,
-    div[data-testid="stSidebar"] p {
+    div[data-testid="stSidebar"] .sidebar-header p {
         color: #FFFFFF !important;
         margin: 0 !important;
         opacity: 1 !important;
         visibility: visible !important;
         display: block !important;
-        font-size: inherit !important;
-        font-weight: inherit !important;
-        background: transparent !important;
-        border: none !important;
-        padding: 0 !important;
+        font-weight: 600 !important;
         text-shadow: none !important;
         filter: none !important;
         -webkit-text-fill-color: #FFFFFF !important;
     }
     
-    /* Make sure the header container itself is visible */
-    .css-1d391kg .sidebar-header,
-    .css-1d391kg div[data-testid="stVerticalBlock"] > div > div > div:has(h1):has(p),
-    .css-1d391kg > div > div > div > div > div > div:has(h1):has(p),
-    div[data-testid="stSidebar"] .sidebar-header {
-        display: block !important;
-        visibility: visible !important;
-        opacity: 1 !important;
-        background: transparent !important;
-        padding: 16px !important;
-        margin: 0 !important;
-        border: none !important;
-    }
-    
-    /* Also fix main content header */
-    .main-header h1,
-    .main-header p {
-        color: #0F172A !important;
-        opacity: 1 !important;
-        visibility: visible !important;
-    }
-    
-    /* Business Profile Section */
-    .css-1d391kg div:has(.stForm) {
-        background-color: #FFFFFF !important;
-        border: 1px solid #E2E8F0 !important;
-        border-radius: 8px !important;
-        padding: 16px !important;
-        margin-bottom: 16px !important;
-    }
-    
-    /* New Conversation Button */
-    .css-1d391kg div:has(button[kind="primary"]) {
-        background-color: #FFFFFF !important;
-        border: 1px solid #E2E8F0 !important;
-        border-radius: 8px !important;
-        padding: 16px !important;
-        margin-bottom: 16px !important;
-    }
-    
-    /* Conversation List Section */
-    .css-1d391kg div:has(.sidebar-section-title) {
-        background-color: #FFFFFF !important;
-        border: 1px solid #E2E8F0 !important;
-        border-radius: 8px !important;
-        padding: 16px !important;
-        margin-bottom: 16px !important;
-    }
-    
-    .css-1d391kg .sidebar-section-title {
-        font-size: 0.875rem !important;
-        font-weight: 600 !important;
-        color: #64748B !important;
-        text-transform: uppercase !important;
-        letter-spacing: 0.05em !important;
-        margin-bottom: 12px !important;
-        padding-bottom: 8px !important;
-        border-bottom: 1px solid #E2E8F0 !important;
-    }
-    
-    /* Conversation Buttons */
-    .css-1d391kg button[kind="secondary"] {
-        background-color: #F8FAFC !important;
-        color: #0F172A !important;
-        border: 1px solid #E2E8F0 !important;
-        text-align: left !important;
-        justify-content: flex-start !important;
-        padding: 10px 12px !important;
+    .css-1d391kg .sidebar-header h1 {
+        font-size: 18px !important;
         margin-bottom: 4px !important;
-        font-size: 0.875rem !important;
-        border-radius: 6px !important;
-        width: 100% !important;
-        box-sizing: border-box !important;
     }
     
-    /* Stats Section */
-    .css-1d391kg div:has(.stats-grid) {
-        background-color: #FFFFFF !important;
-        border: 1px solid #E2E8F0 !important;
-        border-radius: 8px !important;
+    .css-1d391kg .sidebar-header p {
+        font-size: 13px !important;
+        opacity: 0.9 !important;
+        font-weight: 400 !important;
+    }
+    
+    /* Modern Sidebar Sections - DARK THEME */
+    .sidebar-section {
+        background-color: #2F2F2F !important;
+        border: 1px solid #404040 !important;
+        border-radius: var(--radius-sm) !important;
         padding: 16px !important;
-        margin-bottom: 16px !important;
-    }
-    
-    /* Hide any div that doesn't have visible content */
-    .css-1d391kg div:not(:has(*)):not(.sidebar-header) {
-        display: none !important;
-    }
-    
-    .css-1d391kg div:has(> div:empty):not(.sidebar-header) {
-        display: none !important;
+        margin: 12px 16px !important;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05) !important;
     }
     
     .sidebar-section-title {
-        font-size: 0.875rem;
-        font-weight: 600;
-        color: #64748B;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        margin-bottom: 12px;
-        padding-bottom: 8px;
-        border-bottom: 1px solid #E2E8F0;
+        font-size: 11px !important;
+        font-weight: 600 !important;
+        color: var(--text-secondary) !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.5px !important;
+        margin-bottom: 12px !important;
+        padding-bottom: 8px !important;
+        border-bottom: 1px solid var(--border) !important;
     }
     
-    /* Business Profile Section */
-    .sidebar-section .stForm {
-        margin-bottom: 0 !important;
-    }
-    
-    .sidebar-section .stTextInput > div > div > input,
-    .sidebar-section .stSelectbox > div > div > select {
-        background-color: #F8FAFC !important;
-        border: 1px solid #E2E8F0 !important;
-        border-radius: 6px !important;
-        padding: 8px 12px !important;
-        font-size: 0.875rem !important;
-        width: 100% !important;
-        box-sizing: border-box !important;
-    }
-    
-    .sidebar-section .stButton > button {
-        width: 100% !important;
-        background-color: var(--accent) !important;
-        color: #FFFFFF !important;
-        border: none !important;
-        border-radius: 6px !important;
-        padding: 8px 16px !important;
-        font-size: 0.875rem !important;
-        font-weight: 500 !important;
-        margin-top: 8px !important;
-        box-sizing: border-box !important;
-    }
-    
-    .sidebar-section .stButton > button:hover {
-        background-color: #0F172A !important;
-    }
-    
-    /* Conversation buttons */
-    .sidebar-section .stButton > button[kind="secondary"] {
-        background-color: #F1F5F9 !important;
-        color: #0F172A !important;
-        border: 1px solid #E2E8F0 !important;
+    /* Modern Conversation Buttons */
+    .css-1d391kg button[kind="secondary"] {
+        background-color: transparent !important;
+        color: var(--text-primary) !important;
+        border: 1px solid transparent !important;
         text-align: left !important;
         justify-content: flex-start !important;
-        padding: 10px 12px !important;
-        margin-bottom: 4px !important;
-        font-size: 0.875rem !important;
+        padding: 12px 16px !important;
+        margin-bottom: 2px !important;
+        font-size: 14px !important;
+        font-weight: 400 !important;
+        border-radius: var(--radius-sm) !important;
+        width: 100% !important;
+        box-sizing: border-box !important;
+        transition: all 0.2s ease !important;
     }
     
-    .sidebar-section .stButton > button[kind="secondary"]:hover {
-        background-color: #F1F5F9 !important;
-        border-color: var(--accent) !important;
+    .css-1d391kg button[kind="secondary"]:hover {
+        background-color: var(--background) !important;
+        color: var(--primary) !important;
+        transform: translateX(2px) !important;
     }
     
-    /* Stats Grid */
+    /* Modern Primary Buttons */
+    .css-1d391kg .stButton > button[kind="primary"],
+    .css-1d391kg button:not([kind="secondary"]) {
+        background-color: var(--primary) !important;
+        color: #FFFFFF !important;
+        border: none !important;
+        border-radius: var(--radius-sm) !important;
+        padding: 12px 16px !important;
+        font-size: 14px !important;
+        font-weight: 500 !important;
+        margin: 0 !important;
+        width: 100% !important;
+        box-sizing: border-box !important;
+        transition: all 0.2s ease !important;
+        box-shadow: 0 2px 4px rgba(37, 99, 235, 0.2) !important;
+    }
+    
+    .css-1d391kg .stButton > button[kind="primary"]:hover,
+    .css-1d391kg button:not([kind="secondary"]):hover {
+        background-color: var(--primary-dark) !important;
+        transform: translateY(-1px) !important;
+        box-shadow: 0 4px 8px rgba(37, 99, 235, 0.3) !important;
+    }
+    
+    /* Modern Form Elements */
+    .css-1d391kg .stTextInput > div > div > input,
+    .css-1d391kg .stSelectbox > div > div > select {
+        background-color: var(--surface) !important;
+        border: 1px solid var(--border) !important;
+        border-radius: var(--radius-sm) !important;
+        padding: 8px 12px !important;
+        font-size: 13px !important;
+        width: 100% !important;
+        box-sizing: border-box !important;
+        transition: all 0.2s ease !important;
+        color: var(--text-primary) !important;
+        margin-bottom: 8px !important;
+    }
+    
+    .css-1d391kg .stTextInput > div > div > input:focus,
+    .css-1d391kg .stSelectbox > div > div > select:focus {
+        border-color: var(--primary) !important;
+        box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1) !important;
+        outline: none !important;
+    }
+    
+    /* Remove empty white spaces from forms */
+    .css-1d391kg .stForm {
+        border: none !important;
+        background-color: transparent !important;
+        padding: 0 !important;
+        margin: 0 !important;
+    }
+    
+    .css-1d391kg .stForm > div {
+        background-color: transparent !important;
+        padding: 0 !important;
+        margin: 0 !important;
+    }
+    
+    .css-1d391kg .stForm > div > div {
+        background-color: transparent !important;
+        padding: 0 !important;
+        margin: 0 !important;
+    }
+    
+    /* Fix form field containers */
+    .css-1d391kg .stTextInput > div,
+    .css-1d391kg .stSelectbox > div {
+        background-color: transparent !important;
+        border: none !important;
+        padding: 0 !important;
+        margin: 0 0 8px 0 !important;
+    }
+    
+    .css-1d391kg .stTextInput > div > div,
+    .css-1d391kg .stSelectbox > div > div {
+        background-color: var(--surface) !important;
+        border: 1px solid var(--border) !important;
+        border-radius: var(--radius-sm) !important;
+    }
+    
+    /* NUCLEAR: Remove ALL white backgrounds from sidebar forms */
+    div[data-testid="stSidebar"] {
+        background: var(--sidebar-bg) !important;
+    }
+
+    div[data-testid="stSidebar"] * {
+        background-color: transparent !important;
+        background: transparent !important;
+    }
+
+    /* Override all form containers */
+    div[data-testid="stSidebar"] .stForm,
+    div[data-testid="stSidebar"] .stForm > div,
+    div[data-testid="stSidebar"] .stForm > div > div,
+    div[data-testid="stSidebar"] .stForm > div > div > div {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        padding: 0 !important;
+        margin: 0 !important;
+    }
+
+    /* Override all element containers - REMOVE EMPTY BOXES */
+    div[data-testid="stSidebar"] .element-container,
+    div[data-testid="stSidebar"] .element-container > div,
+    div[data-testid="stSidebar"] .element-container > div > div,
+    div[data-testid="stSidebar"] .element-container:empty,
+    div[data-testid="stSidebar"] .element-container > div:empty,
+    div[data-testid="stSidebar"] .element-container > div > div:empty {
+        background: transparent !important;
+        border: none !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        display: none !important;
+        visibility: hidden !important;
+        height: 0 !important;
+        width: 0 !important;
+        overflow: hidden !important;
+    }
+
+    /* Override all Streamlit blocks - REMOVE EMPTY BOXES */
+    div[data-testid="stSidebar"] [data-testid="stVerticalBlock"],
+    div[data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div,
+    div[data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"],
+    div[data-testid="stSidebar"] [data-testid="stVerticalBlock"]:empty,
+    div[data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div:empty {
+        background: transparent !important;
+        border: none !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        display: none !important;
+        visibility: hidden !important;
+        height: 0 !important;
+        width: 0 !important;
+        overflow: hidden !important;
+    }
+
+    /* Remove any empty divs in sidebar */
+    div[data-testid="stSidebar"] div:empty {
+        display: none !important;
+        visibility: hidden !important;
+        height: 0 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+    }
+
+    /* Target specific empty containers */
+    div[data-testid="stSidebar"] div[style*="background"],
+    div[data-testid="stSidebar"] div[style*="background-color"] {
+        background: transparent !important;
+        background-color: transparent !important;
+    }
+
+    /* Text Input fixes - REMOVE ALL WHITE BOXES */
+    div[data-testid="stSidebar"] .stTextInput {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        padding: 0 !important;
+        margin: 0 0 8px 0 !important;
+    }
+
+    div[data-testid="stSidebar"] .stTextInput > div {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        padding: 0 !important;
+        margin: 0 !important;
+    }
+
+    div[data-testid="stSidebar"] .stTextInput > div > div {
+        background: var(--surface) !important;
+        border: 1px solid var(--border) !important;
+        border-radius: var(--radius-sm) !important;
+        box-shadow: none !important;
+        padding: 0 !important;
+        margin: 0 !important;
+    }
+
+    div[data-testid="stSidebar"] .stTextInput > div > div > input {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        color: var(--text-primary) !important;
+        padding: 8px 12px !important;
+    }
+
+    /* Selectbox fixes - REMOVE ALL WHITE BOXES */
+    div[data-testid="stSidebar"] .stSelectbox {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        padding: 0 !important;
+        margin: 0 0 8px 0 !important;
+    }
+
+    div[data-testid="stSidebar"] .stSelectbox > div {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        padding: 0 !important;
+        margin: 0 !important;
+    }
+
+    div[data-testid="stSidebar"] .stSelectbox > div > div {
+        background: var(--surface) !important;
+        border: 1px solid var(--border) !important;
+        border-radius: var(--radius-sm) !important;
+        box-shadow: none !important;
+        padding: 0 !important;
+        margin: 0 !important;
+    }
+
+    div[data-testid="stSidebar"] .stSelectbox > div > div > select {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        color: var(--text-primary) !important;
+        padding: 8px 12px !important;
+    }
+
+    /* Remove any remaining white elements */
+    div[data-testid="stSidebar"] div[style*="background-color: rgb(255"],
+    div[data-testid="stSidebar"] div[style*="background-color: #fff"],
+    div[data-testid="stSidebar"] div[style*="background-color: white"],
+    div[data-testid="stSidebar"] div[style*="background: rgb(255"],
+    div[data-testid="stSidebar"] div[style*="background: #fff"],
+    div[data-testid="stSidebar"] div[style*="background: white"],
+    div[data-testid="stSidebar"] div[style*="background-color: rgba(255"],
+    div[data-testid="stSidebar"] div[style*="background: rgba(255"] {
+        background-color: transparent !important;
+        background: transparent !important;
+    }
+
+    /* Remove any remaining white elements */
+    div[data-testid="stSidebar"] div[style*="background-color: rgb(255"],
+    div[data-testid="stSidebar"] div[style*="background-color: #fff"],
+    div[data-testid="stSidebar"] div[style*="background-color: white"],
+    div[data-testid="stSidebar"] div[style*="background: rgb(255"],
+    div[data-testid="stSidebar"] div[style*="background: #fff"],
+    div[data-testid="stSidebar"] div[style*="background: white"],
+    div[data-testid="stSidebar"] div[style*="background-color: rgba(255"],
+    div[data-testid="stSidebar"] div[style*="background: rgba(255"] {
+        background-color: transparent !important;
+        background: transparent !important;
+    }
+    
+    /* Modern Stats Grid */
     .stats-grid {
         display: grid !important;
         grid-template-columns: 1fr 1fr !important;
@@ -659,78 +1161,205 @@ Here is the full code after making the change:
     }
     
     .stat-item {
-        background-color: #F8FAFC !important;
+        background-color: #262626 !important;
         padding: 12px !important;
-        border-radius: 6px !important;
+        border-radius: var(--radius-sm) !important;
         text-align: center !important;
-        border: 1px solid #E2E8F0 !important;
+        border: 1px solid #404040 !important;
+        transition: all 0.2s ease !important;
+    }
+    
+    .stat-item:hover {
+        transform: translateY(-1px) !important;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.2) !important;
     }
     
     .stat-value {
-        font-size: 1.25rem !important;
+        font-size: 16px !important;
         font-weight: 600 !important;
-        color: #0F172A !important;
+        color: var(--primary) !important;
         margin-bottom: 2px !important;
     }
     
     .stat-label {
-        font-size: 0.75rem !important;
-        color: #64748B !important;
+        font-size: 11px !important;
+        color: var(--text-secondary) !important;
         text-transform: uppercase !important;
-        letter-spacing: 0.05em !important;
+        letter-spacing: 0.5px !important;
     }
     
-    .stAlert {
+    /* Modern Main Content */
+    .main .block-container {
+        padding-top: 2rem !important;
+        padding-bottom: 2rem !important;
+        max-width: 900px !important;
+        margin: 0 auto !important;
+    }
+    
+    /* Modern Header Bar - WHITE THEME */
+    .main-header {
         background-color: #FFFFFF !important;
-        border: 1px solid #E2E8F0 !important;
-        color: #0F172A !important;
-        border-radius: 6px !important;
-        padding: 16px !important;
-        font-size: 0.875rem !important;
+        border: 1px solid #E5E7EB !important;
+        border-radius: var(--radius) !important;
+        padding: 20px 24px !important;
+        margin-bottom: 24px !important;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.1) !important;
     }
     
-    .metric-container {
-        background-color: #FFFFFF !important;
-        border: 1px solid #E2E8F0 !important;
-        border-radius: 8px !important;
-        padding: 20px !important;
-        color: #0F172A !important;
-        font-size: 0.875rem !important;
+    .main-header h1 {
+        font-size: 24px !important;
+        font-weight: 700 !important;
+        color: var(--text-primary) !important;
+        margin: 0 !important;
     }
     
-    /* Remove all bright colors */
-    * {
-        --streamlit-primary-color: var(--accent) !important;
-        --streamlit-secondary-color: #F1F5F9 !important;
-        --streamlit-background-color: #F8FAFC !important;
-        --streamlit-text-color: #0F172A !important;
-        --streamlit-warning-color: #EAB308 !important;
+    .main-header p {
+        font-size: 14px !important;
+        color: var(--text-secondary) !important;
+        margin: 4px 0 0 0 !important;
+        font-weight: 400 !important;
     }
     
-    /* Fix Quick Questions section visibility */
-    .quick-actions, 
-    div[data-testid="stVerticalBlock"] > div:has(h3) {
-        background-color: #FFFFFF !important;
-        color: #0F172A !important;
-    }
-    
-    .quick-actions h3,
-    .quick-actions p,
-    div[data-testid="stVerticalBlock"] > div h3,
-    div[data-testid="stVerticalBlock"] > div p {
-        color: #0F172A !important;
-    }
-    
-    /* Ensure Streamlit buttons are visible */
-    button[kind="primary"] {
-        background-color: var(--accent) !important;
+    /* Modern Message Bubbles - ChatGPT Style */
+    .user-message {
+        background-color: var(--primary) !important;
         color: #FFFFFF !important;
+        padding: 12px 16px !important;
+        border-radius: var(--radius-sm) !important;
+        margin: 8px 0 8px auto !important;
+        max-width: 80% !important;
+        box-shadow: var(--shadow) !important;
+        font-size: 14px !important;
+        line-height: 1.5 !important;
     }
     
-    button[kind="secondary"] {
-        background-color: #F1F5F9 !important;
-        color: #0F172A !important;
-        border: 1px solid #E2E8F0 !important;
+    .assistant-message {
+        background-color: #FFFFFF !important;
+        color: var(--text-primary) !important;
+        padding: 12px 16px !important;
+        border-radius: var(--radius-sm) !important;
+        margin: 8px auto 8px 0 !important;
+        max-width: 80% !important;
+        border: 1px solid var(--border) !important;
+        font-size: 14px !important;
+        line-height: 1.5 !important;
+    }
+    
+    /* Remove "You:" and "Assistant:" labels */
+    .user-message strong:first-child,
+    .assistant-message strong:first-child {
+        display: none !important;
+    }
+    
+    /* Modern Metrics - WHITE BACKGROUND */
+    .metric-box {
+        background-color: #FFFFFF !important;
+        border: 1px solid #E5E7EB !important;
+        border-radius: var(--radius-sm) !important;
+        padding: 20px !important;
+        text-align: center !important;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.1) !important;
+        transition: all 0.2s ease !important;
+    }
+    
+    .metric-box:hover {
+        transform: translateY(-2px) !important;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.2) !important;
+    }
+    
+    .metric-value {
+        font-size: 24px !important;
+        font-weight: 700 !important;
+        color: #1C1C1C !important;
+        margin-bottom: 4px !important;
+    }
+    
+    .metric-label {
+        font-size: 12px !important;
+        color: #6B7280 !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.5px !important;
+        font-weight: 600 !important;
+    }
+    
+    .metric-trend {
+        font-size: 11px !important;
+        margin-top: 4px !important;
+        font-weight: 500 !important;
+    }
+    
+    .metric-trend.positive {
+        color: #10B981 !important;
+    }
+    
+    .metric-trend.negative {
+        color: #EF4444 !important;
+    }
+    
+    /* Modern Quick Actions - WHITE THEME */
+    .quick-actions {
+        background-color: #FFFFFF !important;
+        border: 1px solid #E5E7EB !important;
+        border-radius: var(--radius) !important;
+        padding: 24px !important;
+        margin: 24px 0 !important;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.1) !important;
+    }
+    
+    .quick-actions h3 {
+        font-size: 18px !important;
+        font-weight: 600 !important;
+        color: var(--text-primary) !important;
+        margin: 0 0 8px 0 !important;
+    }
+    
+    .quick-actions p {
+        font-size: 14px !important;
+        color: var(--text-secondary) !important;
+        margin-bottom: 20px !important;
+        line-height: 1.5 !important;
+    }
+    
+    /* Modern Chat Input */
+    .stChatInput > div > div > textarea {
+        border-radius: var(--radius) !important;
+        border: 1px solid var(--border) !important;
+        background-color: var(--surface) !important;
+        padding: 12px 16px !important;
+        font-size: 14px !important;
+        resize: none !important;
+    }
+    
+    .stChatInput > div > div > textarea:focus {
+        border-color: var(--primary) !important;
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1) !important;
+    }
+    
+    /* Micro-animations */
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+    
+    .user-message, .assistant-message {
+        animation: fadeIn 0.3s ease-out !important;
+    }
+    
+    /* Responsive Design */
+    @media (max-width: 768px) {
+        .css-1d391kg {
+            width: 280px !important;
+            min-width: 280px !important;
+            max-width: 280px !important;
+        }
+        
+        .main .block-container {
+            padding: 1rem !important;
+        }
+        
+        .user-message, .assistant-message {
+            max-width: 90% !important;
+        }
     }
     </style>
     """, unsafe_allow_html=True)
@@ -746,20 +1375,69 @@ def render_business_profile_section():
     st.markdown('<div class="sidebar-section-title">Business Profile</div>', unsafe_allow_html=True)
 
     if 'business_id' not in st.session_state:
+        # Compact form with no empty spaces
+        st.markdown("""
+        <style>
+        /* NUCLEAR OPTION: Remove ALL backgrounds from sidebar forms */
+        div[data-testid="stSidebar"] .stForm,
+        div[data-testid="stSidebar"] .stForm > div,
+        div[data-testid="stSidebar"] .stForm > div > div,
+        div[data-testid="stSidebar"] .stForm > div > div > div,
+        div[data-testid="stSidebar"] .element-container,
+        div[data-testid="stSidebar"] .element-container > div,
+        div[data-testid="stSidebar"] .element-container > div > div,
+        div[data-testid="stSidebar"] [data-testid="stVerticalBlock"],
+        div[data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div,
+        div[data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"] {
+            background: transparent !important;
+            background-color: transparent !important;
+            border: none !important;
+            box-shadow: none !important;
+            padding: 0 !important;
+            margin: 0 !important;
+        }
+        
+        /* Force remove any white backgrounds */
+        div[data-testid="stSidebar"] div[style*="background"] {
+            background: transparent !important;
+            background-color: transparent !important;
+        }
+        
+        /* Only keep input field styling */
+        div[data-testid="stSidebar"] .stTextInput > div > div,
+        div[data-testid="stSidebar"] .stSelectbox > div > div {
+            background: var(--surface) !important;
+            border: 1px solid var(--border) !important;
+            border-radius: var(--radius-sm) !important;
+            margin: 0 0 8px 0 !important;
+        }
+        
+        div[data-testid="stSidebar"] input,
+        div[data-testid="stSidebar"] select {
+            background: transparent !important;
+            border: none !important;
+            color: var(--text-primary) !important;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+        
         with st.form("business_profile_form", clear_on_submit=False):
-            name = st.text_input("Business name")
+            name = st.text_input("Business name", key="biz_name")
             business_type = st.selectbox(
                 "Business type",
                 [bt.value for bt in BusinessType],
-                index=0
+                index=0,
+                key="biz_type"
             )
             jurisdiction = st.selectbox(
                 "Jurisdiction",
                 [j.value for j in Jurisdiction],
-                index=0
+                index=0,
+                key="biz_jurisdiction"
             )
-            registration_number = st.text_input("Registration number")
-            submitted = st.form_submit_button("Save")
+            registration_number = st.text_input("Registration number", key="biz_reg")
+            
+            submitted = st.form_submit_button("Save", use_container_width=True)
             if submitted and name and registration_number:
                 profile = engine.create_business_profile(
                     name=name,
@@ -777,44 +1455,149 @@ def render_business_profile_section():
         if profile:
             st.markdown(f"**{profile.name}**")
             st.markdown(f"{profile.business_type.value.title()} • {profile.jurisdiction.value.upper()}")
-        if st.button("Edit business profile"):
+        if st.button("Edit business profile", use_container_width=True):
             del st.session_state['business_id']
             st.rerun()
 
     st.markdown('</div>', unsafe_allow_html=True)
 
-
-def render_regulatory_updates_section():
-    """Display latest regulatory updates relevant to the saved business profile."""
-    if 'business_id' not in st.session_state:
+def handle_send_message(content):
+    """Handle sending a message with RAG chatbot integration"""
+    if not st.session_state.active_conversation_id:
         return
-    if 'reg_monitor' not in st.session_state:
-        st.session_state.reg_monitor = RegulatoryMonitor()
-    monitor: RegulatoryMonitor = st.session_state.reg_monitor
-    updates = monitor.get_updates_for_business(
-        business_id=st.session_state.business_id,
-        limit=5,
-        min_relevance=0.3,
-        include_read=False,
-    )
-    if not updates:
-        st.info("No recent relevant regulatory updates.")
+    
+    # Initialize conversation state if not exists
+    if 'conversation_state' not in st.session_state:
+        st.session_state.conversation_state = ConversationState()
+        st.session_state.chatbot = ComplianceChatbot()
+    
+    # Get response mode from session state
+    response_mode = st.session_state.get('response_mode', 'simple')
+    
+    # Get the current conversation
+    conv = None
+    for c in st.session_state.conversations:
+        if c["id"] == st.session_state.active_conversation_id:
+            conv = c
+            break
+    
+    if not conv:
         return
-    st.markdown("### Latest Regulatory Updates")
-    for upd in updates:
-        with st.expander(f"{upd['title']} ({upd['severity'].title()})"):
-            st.markdown(f"**Source:** {upd['source']}")
-            st.markdown(upd.get('summary', '')[:500] + ("..." if len(upd.get('summary',''))>500 else ""))
-            st.markdown(f"**Relevance:** {upd['impact_score']*100:.0f}%")
-            if upd.get('deadline'):
-                st.markdown(f"**Deadline:** {upd['deadline']}")
-            st.markdown(f"[Read more]({upd['link']})")
-    st.markdown("---")
+    
+    # Add user message immediately to show in UI
+    user_message = {
+        "id": str(int(datetime.now().timestamp())),
+        "content": content,
+        "is_user": True,
+        "timestamp": datetime.now()
+    }
+    conv["messages"].append(user_message)
+    conv["message_count"] += 1
+    if len(conv["messages"]) == 1:
+        conv["title"] = content[:50] + ("..." if len(content) > 50 else "")
+    
+    # Process message with RAG chatbot
+    try:
+        chatbot_response = st.session_state.chatbot.process_message(
+            content, 
+            st.session_state.conversation_state,
+            response_mode=response_mode
+        )
+        
+        # Add assistant response
+        assistant_message = {
+            "id": str(int(datetime.now().timestamp()) + 1),
+            "content": chatbot_response,
+            "is_user": False,
+            "timestamp": datetime.now()
+        }
+        conv["messages"].append(assistant_message)
+        conv["message_count"] += 1
+        
+    except Exception as e:
+        # Fallback response if chatbot fails
+        error_message = {
+            "id": str(int(datetime.now().timestamp()) + 1),
+            "content": f"I apologize, but I encountered an error: {str(e)}. Please try rephrasing your question.",
+            "is_user": False,
+            "timestamp": datetime.now()
+        }
+        conv["messages"].append(error_message)
+        conv["message_count"] += 1
+    
+    # Update conversation state in session
+    st.session_state.conversation_state = st.session_state.conversation_state
 
+def process_pending_request():
+    """Process pending chat request after rerun"""
+    if st.session_state.get("pending_request") and not st.session_state.get("is_processing"):
+        request = st.session_state.pending_request
+        st.session_state.pending_request = None
+        
+        try:
+            # Call backend API
+            response = requests.post(
+                "http://localhost:8000/api/v1/chatbot/chat",
+                json={
+                    "query": request["query"],
+                    "mode": request["mode"],
+                    "business_id": request["business_id"],
+                    "conversation_id": request["conversation_id"]
+                },
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                ai_message = {
+                    "id": str(int(datetime.now().timestamp())),
+                    "content": data.get("response", "Sorry, I couldn't process that request."),
+                    "is_user": False,
+                    "timestamp": datetime.now()
+                }
+                request["conv"]["messages"].append(ai_message)
+                request["conv"]["message_count"] += 1
+                
+                # Store backend conversation ID if available
+                if data.get("conversation_id"):
+                    request["conv"]["backend_id"] = data["conversation_id"]
+            else:
+                error_message = {
+                    "id": str(int(datetime.now().timestamp())),
+                    "content": f"Error: {response.status_code} - {response.text}",
+                    "is_user": False,
+                    "timestamp": datetime.now()
+                }
+                request["conv"]["messages"].append(error_message)
+                
+        except Exception as e:
+            error_message = {
+                "id": str(int(datetime.now().timestamp())),
+                "content": f"Connection error: {str(e)}",
+                "is_user": False,
+                "timestamp": datetime.now()
+            }
+            request["conv"]["messages"].append(error_message)
+        
+        st.rerun()
+
+def create_new_conversation():
+    """Create a new conversation"""
+    new_conv = {
+        "id": str(int(datetime.now().timestamp())),
+        "title": "New Conversation",
+        "timestamp": datetime.now(),
+        "message_count": 0,
+        "messages": [],
+        "backend_id": None
+    }
+    st.session_state.conversations.insert(0, new_conv)
+    st.session_state.active_conversation_id = new_conv["id"]
+    st.rerun()
 
 def main():
-    """Main application with modern enterprise sidebar"""
-    load_css()
+    """Main application with modern ChatGPT-style UI"""
+    load_modern_css()
     
     # Page configuration
     st.set_page_config(
@@ -826,39 +1609,11 @@ def main():
     
     # Initialize session state
     if 'conversations' not in st.session_state:
-        st.session_state.conversations = [
-            {
-                "id": "1",
-                "title": "GDPR Compliance Requirements",
-                "timestamp": datetime.now() - timedelta(days=1),
-                "message_count": 8,
-                "messages": [
-                    {
-                        "id": "1",
-                        "content": "What are the key GDPR compliance requirements for my SaaS business?",
-                        "is_user": True,
-                        "timestamp": datetime.now() - timedelta(days=1, hours=2)
-                    },
-                    {
-                        "id": "2",
-                        "content": "For GDPR compliance in your SaaS business, focus on:\n\n1. **Data Protection Officer (DPO)**: Required if you process large-scale data or special categories of data\n\n2. **Privacy Policy**: Must be transparent, concise, and easily accessible\n\n3. **Lawful Basis**: Obtain explicit consent or have another lawful basis for processing\n\n4. **Data Subject Rights**: Implement procedures for requests to access, rectify, erase data\n\n5. **Breach Notification**: Report to authorities within 72 hours of discovery\n\n6. **Privacy by Design**: Build data protection into your systems from the start\n\n7. **International Transfers**: Use GDPR-compliant mechanisms like Standard Contractual Clauses\n\n8. **Documentation**: Maintain records of processing activities",
-                        "is_user": False,
-                        "timestamp": datetime.now() - timedelta(days=1, hours=1, minutes=50)
-                    }
-                ],
-                "backend_id": None
-            },
-            {
-                "id": "2",
-                "title": "ISO 27001 Certification Process", 
-                "timestamp": datetime.now() - timedelta(days=3),
-                "message_count": 12,
-                "messages": []
-            }
-        ]
+        st.session_state.conversations = []
     
     if 'active_conversation_id' not in st.session_state:
-        st.session_state.active_conversation_id = "1"
+        # Create initial conversation with onboarding
+        create_new_conversation()
     
     if 'is_processing' not in st.session_state:
         st.session_state.is_processing = False
@@ -869,6 +1624,25 @@ def main():
     if 'business_id' not in st.session_state:
         st.session_state.business_id = None
     
+    # Initialize RAG chatbot components
+    if 'conversation_state' not in st.session_state:
+        st.session_state.conversation_state = ConversationState()
+        st.session_state.chatbot = ComplianceChatbot()
+        
+        # Add welcome message to first conversation
+        if st.session_state.conversations:
+            first_conv = st.session_state.conversations[0]
+            if not first_conv.get("messages"):
+                welcome_message = {
+                    "id": "0",
+                    "content": "👋 Welcome to BizComply AI! I'm your expert Business Compliance Assistant for India.\n\nTo provide you with accurate compliance guidance, I need to understand your business first. Let me ask you a few quick questions:\n\n### Where is your business located? (City/State)\n\n- Delhi\n- Mumbai\n- Bangalore\n- Hyderabad\n- Chennai\n- Other\n\nPlease select one option or type your answer.",
+                    "is_user": False,
+                    "timestamp": datetime.now()
+                }
+                first_conv["messages"].append(welcome_message)
+                first_conv["message_count"] = 1
+                first_conv["title"] = "Business Compliance Setup"
+    
     # Process any pending requests
     process_pending_request()
     
@@ -878,24 +1652,37 @@ def main():
         None
     )
     
-    # Render interface with modern enterprise sidebar
-    render_enterprise_sidebar_interface(active_conversation)
-
-def render_enterprise_sidebar_interface(active_conversation):
-    """Render interface with modern enterprise sidebar"""
-    
-    # Modern Enterprise Sidebar
+    # Render modern sidebar
     with st.sidebar:
-        # Sidebar Header
+        # Modern Header
         st.markdown("""
-        <div class="sidebar-header" style="background: transparent; padding: 16px; margin: 0;">
-            <h1 style="color: #FFFFFF !important; margin: 0; padding: 0; opacity: 1; visibility: visible; display: block; text-shadow: none; filter: none; -webkit-text-fill-color: #FFFFFF;">🏢 BizComply AI</h1>
-            <p style="color: #FFFFFF !important; margin: 0; padding: 0; opacity: 1; visibility: visible; display: block; text-shadow: none; filter: none; -webkit-text-fill-color: #FFFFFF;">Professional Compliance Assistant</p>
+        <div class="sidebar-header">
+            <h1>🏢 BizComply AI</h1>
+            <p>Professional Compliance Assistant</p>
         </div>
         """, unsafe_allow_html=True)
         
         # Business Profile Section
         render_business_profile_section()
+        
+        # Response Mode Section
+        st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
+        st.markdown('<div class="sidebar-section-title">Response Mode</div>', unsafe_allow_html=True)
+        
+        # Initialize response mode in session state
+        if 'response_mode' not in st.session_state:
+            st.session_state.response_mode = DEFAULT_RESPONSE_MODE
+        
+        response_mode = st.selectbox(
+            "Choose response style:",
+            options=["concise", "simple", "detailed"],
+            index=["concise", "simple", "detailed"].index(st.session_state.response_mode),
+            key="response_mode_selector",
+            help="Concise: Short answers\nSimple: Standard responses\nDetailed: In-depth explanations"
+        )
+        
+        st.session_state.response_mode = response_mode
+        st.markdown('</div>', unsafe_allow_html=True)
         
         # New Conversation Button
         if st.button("➕ New Conversation", key="new_conv", use_container_width=True):
@@ -940,11 +1727,14 @@ def render_enterprise_sidebar_interface(active_conversation):
         
         st.markdown('</div>', unsafe_allow_html=True)
     
-    # Main content with bottom padding
-    st.markdown('<div class="main-content">', unsafe_allow_html=True)
-    
-    # Main content
-    st.markdown('<div class="main-header"><h1>🏢 BizComply AI</h1><p>Professional Compliance Assistant</p></div>', unsafe_allow_html=True)
+    # Main content area
+    # Modern Header
+    st.markdown("""
+    <div class="main-header">
+        <h1>🏢 BizComply AI</h1>
+        <p>Professional Compliance Assistant</p>
+    </div>
+    """, unsafe_allow_html=True)
     
     # Professional metrics
     col1, col2, col3, col4 = st.columns(4)
@@ -984,9 +1774,6 @@ def render_enterprise_sidebar_interface(active_conversation):
         </div>
         """, unsafe_allow_html=True)
     
-    # Regulatory updates section
-    render_regulatory_updates_section()
-    
     # Chat messages - ChatGPT Style
     if active_conversation and active_conversation["messages"]:
         for message in active_conversation["messages"]:
@@ -1000,331 +1787,42 @@ def render_enterprise_sidebar_interface(active_conversation):
         <div class="quick-actions">
             <h3>Quick Actions</h3>
             <p>Get started with these common compliance topics:</p>
-            <div class="action-buttons">
-                <div class="action-btn">📋 GDPR Requirements</div>
-                <div class="action-btn">💰 Financial Compliance</div>
-                <div class="action-btn">🏆 Industry Certifications</div>
-                <div class="action-btn">🔍 Compliance Audit</div>
-            </div>
         </div>
         """, unsafe_allow_html=True)
         
-        # Alternative quick questions with Streamlit buttons
-        st.markdown("### Quick Questions")
+        # Modern quick action buttons
         col1, col2 = st.columns(2)
         with col1:
             if st.button("📋 GDPR Requirements", key="gdpr_btn"):
                 handle_send_message("What are the key GDPR compliance requirements for my business?")
-        with col2:
+                st.rerun()
             if st.button("💰 Financial Compliance", key="financial_btn"):
-                handle_send_message("How do I ensure financial reporting compliance?")
+                handle_send_message("What are the main financial compliance requirements?")
+                st.rerun()
         
-        col3, col4 = st.columns(2)
-        with col3:
+        with col2:
             if st.button("🏆 Industry Certifications", key="cert_btn"):
-                handle_send_message("What certifications do I need for my industry?")
-        with col4:
+                handle_send_message("What industry certifications should I consider?")
+                st.rerun()
             if st.button("🔍 Compliance Audit", key="audit_btn"):
-                handle_send_message("How to conduct a compliance audit?")
+                handle_send_message("How do I conduct a compliance audit?")
+                st.rerun()
     
-    st.markdown('</div>', unsafe_allow_html=True)
-    
-    # --- Chat Input ---
-    # Always show chat input when on the chat page
+    # Modern Chat Input
     prompt = st.chat_input("Ask about compliance, regulations, or your business requirements...")
     if prompt:
         # If no active conversation, create one first
         if not active_conversation:
             create_new_conversation()
+            # Re-fetch the conversation object after creation
             active_conversation = next((c for c in st.session_state.conversations if c["id"] == st.session_state.active_conversation_id), None)
         
         if active_conversation:
             handle_send_message(prompt)
+            # CRITICAL FIX: Rerun the app to display the new message immediately
+            st.rerun()
         else:
             st.error("Unable to create conversation. Please try again.")
-
-def create_new_conversation():
-    """Create a new conversation"""
-    new_conv = {
-        "id": str(int(datetime.now().timestamp())),
-        "title": "New Conversation",
-        "timestamp": datetime.now(),
-        "message_count": 0,
-        "messages": []
-    }
-    st.session_state.conversations.insert(0, new_conv)
-    st.session_state.active_conversation_id = new_conv["id"]
-    st.rerun()
-
-def handle_send_message(content):
-    """Handle sending a message with database persistence"""
-    if not st.session_state.active_conversation_id:
-        return
-    
-    # Get the current conversation
-    conv = None
-    for c in st.session_state.conversations:
-        if c["id"] == st.session_state.active_conversation_id:
-            conv = c
-            break
-    
-    if not conv:
-        return
-    
-    # Store the request in session state for processing after rerun
-    st.session_state.pending_request = {
-        "conversation_id": conv.get("backend_id"),
-        "query": content,
-        "mode": "concise",
-        "business_id": st.session_state.get("business_id"),
-        "conv": conv
-    }
-    
-    # Add user message immediately to show in UI
-    user_message = {
-        "id": str(int(datetime.now().timestamp())),
-        "content": content,
-        "is_user": True,
-        "timestamp": datetime.now()
-    }
-    conv["messages"].append(user_message)
-    conv["message_count"] += 1
-    if len(conv["messages"]) == 1:
-        conv["title"] = content[:50] + ("..." if len(content) > 50 else "")
-    
-    # Set processing state and rerun
-    st.session_state.is_processing = True
-    st.rerun()
-
-def process_pending_request():
-    """Process pending request after rerun"""
-    if st.session_state.get("pending_request"):
-        pending = st.session_state.pending_request
-        backend_url = "http://localhost:8000/api/v1/chatbot/chat"
-        
-        try:
-            response = requests.post(backend_url, json={
-                "conversation_id": pending["conversation_id"],
-                "query": pending["query"],
-                "mode": pending["mode"],
-                "business_id": pending["business_id"]
-            }, timeout=60)
-            
-            if response.status_code == 200:
-                data = response.json()
-                ai_response = data.get("answer", "(no answer)")
-                # Save backend conversation id for future turns
-                pending["conv"]["backend_id"] = data.get("conversation_id")
-                
-                # Add AI response to session state
-                ai_message = {
-                    "id": str(int(datetime.now().timestamp()) + 1),
-                    "content": ai_response,
-                    "is_user": False,
-                    "timestamp": datetime.now()
-                }
-                pending["conv"]["messages"].append(ai_message)
-                pending["conv"]["message_count"] += 1
-            else:
-                error_message = f"(Backend error {response.status_code})"
-                ai_message = {
-                    "id": str(int(datetime.now().timestamp()) + 1),
-                    "content": error_message,
-                    "is_user": False,
-                    "timestamp": datetime.now()
-                }
-                pending["conv"]["messages"].append(ai_message)
-                pending["conv"]["message_count"] += 1
-        except Exception as e:
-            error_message = f"(Backend unreachable: {e})\n" + generate_ai_response(pending["query"])
-            ai_message = {
-                "id": str(int(datetime.now().timestamp()) + 1),
-                "content": error_message,
-                "is_user": False,
-                "timestamp": datetime.now()
-            }
-            pending["conv"]["messages"].append(ai_message)
-            pending["conv"]["message_count"] += 1
-        
-        # Clear pending request and reset processing state
-        st.session_state.pending_request = None
-        st.session_state.is_processing = False
-        st.rerun()
-
-def generate_ai_response(prompt):
-    """Generate AI response for compliance questions"""
-    prompt_lower = prompt.lower()
-    
-    if "gdpr" in prompt_lower:
-        return """For GDPR compliance in your SaaS business, focus on:
-
-1. **Data Protection Impact Assessments** - Conduct assessments for high-risk processing
-2. **Lawful Basis for Processing** - Ensure you have valid legal basis (consent, contract, etc.)
-3. **User Rights** - Implement data access, rectification, erasure, and portability
-4. **Privacy by Design** - Integrate data protection into product development
-5. **Data Processing Agreements** - Have proper agreements with third-party processors
-6. **Security Measures** - Implement appropriate technical and organizational security
-
-Would you like me to elaborate on any specific area?"""
-    
-    elif "iso" in prompt_lower or "certification" in prompt_lower:
-        return """The ISO 27001 certification process involves:
-
-1. **Gap Analysis** - Assess current security controls against requirements
-2. **ISMS Implementation** - Establish Information Security Management System
-3. **Risk Assessment** - Identify and evaluate information security risks
-4. **Control Implementation** - Implement appropriate security controls
-5. **Documentation** - Create comprehensive policies and procedures
-6. **Internal Audit** - Conduct internal audits to verify compliance
-7. **Certification Audit** - Undergo external audit by accredited body
-8. **Continuous Improvement** - Maintain and improve the ISMS
-
-Process typically takes 6-12 months depending on organization size."""
-    
-    elif "financial" in prompt_lower or "reporting" in prompt_lower:
-        return """For financial reporting compliance, focus on:
-
-1. **GAAP/IFRS Compliance** - Follow appropriate accounting standards
-2. **Internal Controls** - Implement SOX controls if applicable
-3. **Audit Trail** - Maintain complete documentation
-4. **Regular Audits** - Conduct internal and external audits
-5. **Financial Systems** - Ensure proper system controls
-6. **Reporting Timelines** - Meet all regulatory filing deadlines
-7. **Disclosure Requirements** - Provide accurate and complete disclosures
-
-Your specific requirements depend on your jurisdiction and industry."""
-    
-    else:
-        return """I'm here to help with your compliance and business queries. Based on your question, here's my guidance:
-
-**Key Considerations:**
-- Review applicable regulations for your industry
-- Assess current compliance status
-- Implement necessary controls and processes
-- Document everything thoroughly
-- Regular training and awareness programs
-
-**Next Steps:**
-1. Conduct a compliance assessment
-2. Identify gaps and priorities
-3. Develop implementation roadmap
-4. Create documentation systems
-5. Establish monitoring procedures
-
-For more specific guidance, could you provide details about:
-- Your business type and industry?
-- Specific regulations you're concerned about?
-- Current compliance challenges?
-- Timeline requirements?
-
-This will help me provide more targeted assistance for your situation."""
-
-def generate_ai_response(prompt: str) -> str:
-    """Generate AI response using configured LLMProvider and business context.
-    Falls back to keyword guidance if an LLM is unavailable or errors occur."""
-    # Attempt to use the configured LLM
-    try:
-        llm = LLMProvider.get_llm()
-
-        # Build business profile context
-        profile_text = ""
-        if 'business_id' in st.session_state:
-            engine: ComplianceEngine = st.session_state.compliance_engine
-            profile = engine.get_business_profile(st.session_state.business_id)
-            if profile:
-                profile_text = (
-                    f"Business Name: {profile.name}\n"
-                    f"Business Type: {profile.business_type.value}\n"
-                    f"Jurisdiction: {profile.jurisdiction.value}\n"
-                    f"Registration Number: {profile.registration_number}\n"
-                )
-
-        # Gather last 10 messages for context
-        history_text = ""
-        for conv in st.session_state.conversations:
-            if conv['id'] == st.session_state.active_conversation_id:
-                for msg in conv['messages'][-10:]:
-                    speaker = "User" if msg['is_user'] else "Assistant"
-                    history_text += f"{speaker}: {msg['content']}\n"
-                break
-
-        system_prompt = (
-            "You are BizComply AI, an expert compliance assistant. "
-            "Provide precise, actionable, and personalised answers. "
-            "If information is missing, ask a concise follow-up question."
-        )
-
-        full_prompt = (
-            f"{system_prompt}\n\n"
-            f"Business Profile:\n{profile_text}\n"
-            f"Conversation History:\n{history_text}\n"
-            f"User: {prompt}\nAssistant:"
-        )
-
-        response = llm.invoke(full_prompt)
-        if isinstance(response, str):
-            return response
-        if hasattr(response, 'content'):
-            return response.content  # type: ignore[attr-defined]
-        return str(response)
-
-    except Exception:
-        # Fallback to simple keyword-based guidance if LLM not available
-        prompt_lower = prompt.lower()
-        if "gdpr" in prompt_lower:
-            return (
-                "For GDPR compliance in your SaaS business, focus on:\n\n"
-                "1. **Data Protection Impact Assessments** - Conduct assessments for high-risk processing\n"
-                "2. **Lawful Basis for Processing** - Ensure you have valid legal basis (consent, contract, etc.)\n"
-                "3. **User Rights** - Implement data access, rectification, erasure, and portability\n"
-                "4. **Privacy by Design** - Integrate data protection into product development\n"
-                "5. **Data Processing Agreements** - Have proper agreements with third-party processors\n"
-                "6. **Security Measures** - Implement appropriate technical and organisational security\n\n"
-                "Would you like me to elaborate on any specific area?"
-            )
-        elif "iso" in prompt_lower or "certification" in prompt_lower:
-            return (
-                "The ISO 27001 certification process involves:\n\n"
-                "1. **Gap Analysis** - Assess current security controls against requirements\n"
-                "2. **ISMS Implementation** - Establish Information Security Management System\n"
-                "3. **Risk Assessment** - Identify and evaluate information security risks\n"
-                "4. **Control Implementation** - Implement appropriate security controls\n"
-                "5. **Documentation** - Create comprehensive policies and procedures\n"
-                "6. **Internal Audit** - Conduct internal audits to verify compliance\n"
-                "7. **Certification Audit** - Undergo external audit by accredited body\n"
-                "8. **Continuous Improvement** - Maintain and improve the ISMS\n\n"
-                "Process typically takes 6-12 months depending on organisation size."
-            )
-        elif "financial" in prompt_lower or "reporting" in prompt_lower:
-            return (
-                "For financial reporting compliance, focus on:\n\n"
-                "1. **GAAP/IFRS Compliance** - Follow appropriate accounting standards\n"
-                "2. **Internal Controls** - Implement SOX controls if applicable\n"
-                "3. **Audit Trail** - Maintain complete documentation\n"
-                "4. **Regular Audits** - Conduct internal and external audits\n"
-                "5. **Financial Systems** - Ensure proper system controls\n"
-                "6. **Reporting Timelines** - Meet all regulatory filing deadlines\n"
-                "7. **Disclosure Requirements** - Provide accurate and complete disclosures\n"
-                "\nYour specific requirements depend on your jurisdiction and industry."
-            )
-        else:
-            return (
-                "I'm here to help with your compliance and business queries. Based on your question, here's my guidance:\n\n"
-                "**Key Considerations:**\n"
-                "- Review applicable regulations for your industry\n"
-                "- Assess current compliance status\n"
-                "- Implement necessary controls and processes\n"
-                "- Document everything thoroughly\n"
-                "- Regular training and awareness programs\n\n"
-                "**Next Steps:**\n"
-                "1. Conduct a compliance assessment\n"
-                "2. Identify gaps and priorities\n"
-                "3. Develop implementation roadmap\n"
-                "4. Create documentation systems\n"
-                "5. Establish monitoring procedures\n\n"
-                "For more specific guidance, could you provide details about your business type, jurisdiction, and current challenges?"
-            )
-
 
 if __name__ == "__main__":
     main()
