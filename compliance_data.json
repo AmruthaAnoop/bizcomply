@@ -1,0 +1,223 @@
+{
+  "industries": {
+    "food_service": {
+      "licenses": [
+        {
+          "name": "FSSAI State License",
+          "mandatory": true,
+          "description": "Required for any business handling food preparation, storage, or distribution.",
+          "link": "https://foscos.fssai.gov.in/",
+          "documents": [
+            "ID Proof",
+            "Kitchen Blueprint",
+            "List of Directors",
+            "Address Proof"
+          ],
+          "timeline": "30-60 days",
+          "cost": "₹100-5,000 depending on turnover",
+          "authority": "Food Safety and Standards Authority of India"
+        },
+        {
+          "name": "Health Trade License",
+          "mandatory": true,
+          "description": "Local municipal license for food businesses",
+          "authority": "Local Municipal Corporation",
+          "documents": [
+            "Application Form",
+            "Address Proof",
+            "NOC from neighbors"
+          ],
+          "timeline": "15-30 days",
+          "cost": "₹500-2,000"
+        },
+        {
+          "name": "GST Registration",
+          "mandatory": false,
+          "threshold": "Turnover > 20 Lakhs (Service) or 40 Lakhs (Goods)",
+          "description": "Required if turnover exceeds threshold",
+          "link": "https://www.gst.gov.in/",
+          "documents": [
+            "PAN",
+            "Address Proof",
+            "Bank Details",
+            "Photos"
+          ],
+          "timeline": "3-7 days",
+          "cost": "Free"
+        }
+      ],
+      "compliance": [
+        {
+          "name": "FSSAI Annual Renewal",
+          "frequency": "Yearly",
+          "deadline": "Before license expiry",
+          "penalty": "₹1,000 per day delay"
+        },
+        {
+          "name": "GST Returns",
+          "frequency": "Monthly/Quarterly",
+          "deadline": "20th of next month",
+          "penalty": "₹50 per day delay + interest"
+        }
+      ]
+    },
+    "retail": {
+      "licenses": [
+        {
+          "name": "Shop & Establishment Act",
+          "mandatory": true,
+          "description": "Must be obtained within 30 days of starting work.",
+          "authority": "Local Municipal Corporation",
+          "documents": [
+            "Application Form",
+            "Address Proof",
+            "ID Proof"
+          ],
+          "timeline": "7-15 days",
+          "cost": "₹300-1,000"
+        },
+        {
+          "name": "GST Registration",
+          "mandatory": false,
+          "threshold": "Turnover > 40 Lakhs (Goods)",
+          "description": "Required if turnover exceeds threshold",
+          "link": "https://www.gst.gov.in/",
+          "documents": [
+            "PAN",
+            "Address Proof",
+            "Bank Details"
+          ],
+          "timeline": "3-7 days",
+          "cost": "Free"
+        }
+      ],
+      "compliance": [
+        {
+          "name": "Shop License Renewal",
+          "frequency": "Yearly",
+          "deadline": "Before expiry date",
+          "penalty": "₹500-2,000"
+        }
+      ]
+    },
+    "it_services": {
+      "licenses": [
+        {
+          "name": "GST Registration",
+          "mandatory": false,
+          "threshold": "Turnover > 20 Lakhs (Services)",
+          "description": "Required if turnover exceeds threshold",
+          "link": "https://www.gst.gov.in/",
+          "documents": [
+            "PAN",
+            "Address Proof",
+            "Bank Details"
+          ],
+          "timeline": "3-7 days",
+          "cost": "Free"
+        }
+      ],
+      "compliance": [
+        {
+          "name": "GST Returns",
+          "frequency": "Monthly/Quarterly",
+          "deadline": "20th of next month",
+          "penalty": "₹50 per day delay + interest"
+        },
+        {
+          "name": "TDS Returns",
+          "frequency": "Quarterly",
+          "deadline": "31st of quarter end month",
+          "penalty": "₹200 per day delay"
+        }
+      ]
+    }
+  },
+  "entity_types": {
+    "sole_proprietorship": {
+      "registrations": [
+        {
+          "name": "Shop & Establishment Act",
+          "mandatory": true,
+          "description": "Basic registration for all businesses"
+        },
+        {
+          "name": "MSME Registration",
+          "mandatory": false,
+          "description": "Optional for government schemes benefits",
+          "link": "https://udyamregistration.gov.in/",
+          "benefits": [
+            "Collateral-free loans",
+            "Subsidies",
+            "Priority sector lending"
+          ]
+        }
+      ],
+      "taxation": {
+        "income_tax": "Individual tax slabs apply",
+        "gst_threshold": "20 Lakhs (Services) / 40 Lakhs (Goods)",
+        "tds_applicability": "If rent > ₹50,000/month or professional fees > ₹30,000"
+      }
+    },
+    "private_limited": {
+      "registrations": [
+        {
+          "name": "Company Incorporation",
+          "mandatory": true,
+          "description": "Registration with Ministry of Corporate Affairs",
+          "link": "https://www.mca.gov.in/",
+          "documents": [
+            "MOA & AOA",
+            "Director DIN",
+            "Registered Office Address"
+          ],
+          "timeline": "15-20 days",
+          "cost": "₹3,000-10,000 + government fees"
+        },
+        {
+          "name": "PAN & TAN",
+          "mandatory": true,
+          "description": "Company PAN and Tax Deduction Account Number",
+          "timeline": "7-10 days",
+          "cost": "₹107 + ₹64"
+        }
+      ],
+      "taxation": {
+        "income_tax": "25% (up to ₹400 Cr turnover) / 22% (new companies)",
+        "gst_threshold": "20 Lakhs (Services) / 40 Lakhs (Goods)",
+        "compliance": [
+          "Annual filing",
+          "Board meetings",
+          "Statutory audit",
+          "GST returns"
+        ]
+      }
+    }
+  },
+  "deadlines": {
+    "annual": [
+      {
+        "name": "Income Tax Return",
+        "date": "31st July (Individual)",
+        "penalty": "₹5,000"
+      },
+      {
+        "name": "GST Annual Return",
+        "date": "31st December",
+        "penalty": "₹100 per day"
+      }
+    ],
+    "monthly": [
+      {
+        "name": "GST Return GSTR-1",
+        "date": "11th of next month",
+        "penalty": "₹50 per day"
+      },
+      {
+        "name": "GST Return GSTR-3B",
+        "date": "20th of next month",
+        "penalty": "₹50 per day"
+      }
+    ]
+  }
+}

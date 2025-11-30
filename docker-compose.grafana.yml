@@ -1,0 +1,93 @@
+version: '3.8'
+
+services:
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - grafana-storage:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
+    depends_on:
+      - prometheus
+      - alertmanager
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./monitoring/prometheus:/etc/prometheus
+      - prometheus-data:/prometheus
+    depends_on:
+      - alertmanager
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: alertmanager
+    ports:
+      - "9093:9093"
+    command:
+      - '--config.file=/etc/alertmanager/config.yml'
+      - '--storage.path=/alertmanager'
+    volumes:
+      - ./monitoring/alertmanager/config.yml:/etc/alertmanager/config.yml
+      - ./monitoring/alertmanager/templates:/etc/alertmanager/templates
+      - alertmanager-data:/alertmanager
+    env_file:
+      - ./monitoring/alertmanager/.env
+    depends_on:
+      - prometheus
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    ports:
+      - "9100:9100"
+    volumes:
+      - /:/host:ro,rslave
+    command:
+      - '--path.rootfs=/host'
+    restart: unless-stopped
+
+  # Add a service to test alerts
+  alert-tester:
+    image: alpine/curl:latest
+    container_name: alert-tester
+    command: >
+      sh -c "while true; do 
+        curl -s -X POST http://alertmanager:9093/api/v2/alerts -d '
+          [{
+            \"status\": \"firing\",
+            \"labels\": {
+              \"alertname\": \"TestAlert\",
+              \"service\": \"test-service\",
+              \"severity\":\"warning\",
+              \"instance\": \"test-instance\"
+            },
+            \"annotations\": {
+              \"summary\": \"This is a test alert\",
+              \"description\": \"This is a test alert to verify the notification setup\"
+            },
+            \"generatorURL\": \"http://prometheus:9090/graph?g0.expr=up+%3D%3D+0&g0.tab=1\"
+          }]'
+        sleep 300; 
+      done"
+    depends_on:
+      - alertmanager
+
+volumes:
+  grafana-storage:
+  prometheus-data:
+  alertmanager-data:

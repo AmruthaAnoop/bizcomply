@@ -1,0 +1,58 @@
+# Core Dependencies
+streamlit>=1.32.0
+fastapi>=0.95.0
+uvicorn>=0.21.1
+python-dotenv>=1.0.0
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+python-multipart>=0.0.6
+email-validator>=2.0.0
+pydantic>=1.10.7
+pydantic-settings>=2.0.0
+sqlalchemy>=2.0.0
+alembic>=1.12.0
+sqlalchemy-utils>=0.38.3
+aiosqlite>=0.18.0
+
+# LangChain Core
+langchain-core>=0.1.0
+langchain-community>=0.0.10
+langchain-text-splitters>=0.0.1
+
+# LLM Providers
+langchain-openai>=0.0.5
+langchain-groq>=0.1.0
+langchain-google-genai>=0.0.6
+
+# Embeddings
+sentence-transformers>=2.2.2
+faiss-cpu>=1.7.4  # Use faiss-gpu if you have CUDA
+
+# Document Loaders
+pypdf>=3.15.0
+docx2txt>=0.8
+docx2python>=2.0.0
+unstructured>=0.10.0
+
+# Web Search
+requests>=2.31.0
+
+# Utilities
+tqdm>=4.66.1
+python-magic>=0.4.27
+
+# requirements.txt
+aiohttp>=3.8.0
+feedparser>=6.0.0
+python-dotenv>=0.19.0
+streamlit>=1.28.0
+plotly>=5.15.0
+pandas>=1.5.0
+openai>=0.28.0
+chromadb>=0.4.0
+beautifulsoup4>=4.12.0
+python-dateutil>=2.8.0
+pydantic>=1.10.0
+sqlalchemy>=2.0.0
+alembic>=1.11.0
+tiktoken>=0.5.0

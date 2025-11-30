@@ -1,0 +1,62 @@
+groups:
+- name: compliance.rules
+  rules:
+  # High error rate alert
+  - alert: HighErrorRate
+    expr: sum(rate(http_requests_total{job=~"fastapi", status_code=~"5.."}[5m])) by (job, endpoint) / sum(rate(http_requests_total{job=~"fastapi"}[5m])) by (job, endpoint) * 100 > 5
+    for: 5m
+    labels:
+      severity: critical
+      team: compliance
+    annotations:
+      summary: "High error rate on {{ $labels.job }}/{{ $labels.endpoint }}"
+      description: "Error rate is {{ $value }}% for {{ $labels.job }}/{{ $labels.endpoint }}"
+      runbook: "https://your-runbook-url.com/high-error-rate"
+
+  # High latency alert
+  - alert: HighLatency
+    expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=~"fastapi"}[5m])) by (le, endpoint)) > 1
+    for: 10m
+    labels:
+      severity: warning
+      team: compliance
+    annotations:
+      summary: "High latency on {{ $labels.endpoint }}"
+      description: "95th percentile latency is {{ $value }}s for {{ $labels.endpoint }}"
+      runbook: "https://your-runbook-url.com/high-latency"
+
+  # Service down alert
+  - alert: ServiceDown
+    expr: up{job=~"fastapi"} == 0
+    for: 5m
+    labels:
+      severity: critical
+      team: operations
+    annotations:
+      summary: "Service {{ $labels.job }} is down"
+      description: "{{ $labels.instance }} of job {{ $labels.job }} has been down for more than 5 minutes."
+      runbook: "https://your-runbook-url.com/service-down"
+
+  # High request rate
+  - alert: HighRequestRate
+    expr: sum(rate(http_requests_total{job=~"fastapi"}[5m])) by (endpoint) > 1000
+    for: 5m
+    labels:
+      severity: warning
+      team: operations
+    annotations:
+      summary: "High request rate on {{ $labels.endpoint }}"
+      description: "Request rate is {{ $value }} req/s for {{ $labels.endpoint }}"
+      runbook: "https://your-runbook-url.com/high-request-rate"
+
+  # Compliance check failed
+  - alert: ComplianceCheckFailed
+    expr: compliance_check_result{result="fail"} == 1
+    for: 1m
+    labels:
+      severity: critical
+      team: compliance
+    annotations:
+      summary: "Compliance check failed: {{ $labels.check_name }}"
+      description: "Compliance check '{{ $labels.check_name }}' failed with error: {{ $labels.error }}"
+      runbook: "https://your-runbook-url.com/compliance-check-failed"

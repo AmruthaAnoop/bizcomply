@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>BizComply AI - Clean Layout</title>
+  <!-- Tailwind via CDN for quick testing -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* Small helper to keep the layout exact */
+    html,body,#app { height: 100%; }
+    /* Ensure long content scrolls and composer stays fixed */
+    .main-scroll { padding-bottom: 140px; } /* leave room for composer */
+  </style>
+</head>
+<body class="antialiased bg-slate-50 text-slate-900">
+  <div id="app" class="flex min-h-screen">
+
+    <!-- SIDEBAR (fixed width) -->
+    <aside class="w-64 flex-shrink-0 bg-slate-900 text-slate-100">
+      <div class="px-6 py-8">
+        <div class="flex items-center gap-3">
+          <div class="w-9 h-9 rounded-md bg-gradient-to-br from-sky-300 to-indigo-400 flex items-center justify-center shadow">
+            <!-- simple icon -->
+            🏢
+          </div>
+          <div>
+            <div class="text-lg font-semibold">BizComply AI</div>
+            <div class="text-sm text-slate-300">Business Compliance Assistant</div>
+          </div>
+        </div>
+
+        <button class="mt-6 w-full bg-slate-800 border border-slate-700 hover:bg-slate-700 text-slate-100 px-3 py-2 rounded-lg flex items-center justify-center gap-2">
+          <span class="text-violet-300">+</span> New Chat
+        </button>
+
+        <div class="mt-8 border-t border-slate-800 pt-6">
+          <div class="text-slate-300 text-sm mb-3">Conversations</div>
+          <nav class="flex flex-col gap-3">
+            <a class="block px-3 py-3 rounded-lg bg-transparent hover:bg-slate-800 text-slate-200 border border-slate-800">License Requirements Query</a>
+            <a class="block px-3 py-3 rounded-lg bg-transparent hover:bg-slate-800 text-slate-200 border border-slate-800">Tax Compliance Questions</a>
+            <a class="block px-3 py-3 rounded-lg bg-transparent hover:bg-slate-800 text-slate-200 border border-slate-800">Business Registration Guide</a>
+          </nav>
+        </div>
+
+        <div class="mt-8 border-t border-slate-800 pt-6">
+          <div class="text-slate-300 text-sm mb-3">Tools</div>
+          <div class="flex flex-col gap-3">
+            <button class="text-left px-3 py-3 rounded-lg bg-slate-800 border border-slate-700 hover:bg-slate-700">🔎 License Finder</button>
+            <button class="text-left px-3 py-3 rounded-lg bg-slate-800 border border-slate-700 hover:bg-slate-700">🧮 Tax Calculator</button>
+            <button class="text-left px-3 py-3 rounded-lg bg-slate-800 border border-slate-700 hover:bg-slate-700">📄 Registration Helper</button>
+          </div>
+        </div>
+
+      </div>
+    </aside>
+
+    <!-- MAIN content area -->
+    <main class="flex-1 bg-slate-50">
+      <!-- top bar space (keeps top border dark for contrast) -->
+      <div class="h-14 border-b border-transparent"></div>
+
+      <!-- scrollable content area -->
+      <div class="main-scroll px-6 md:px-12 lg:px-24">
+
+        <!-- chat shell (centered column) -->
+        <div class="mx-auto w-full max-w-3xl flex flex-col items-center gap-6 py-6">
+
+          <!-- QUESTION pill (centered, smaller than card) -->
+          <div class="w-full max-w-2xl">
+            <div class="mx-auto max-w-2xl bg-slate-100 border border-slate-200 rounded-full px-6 py-3 text-slate-800 text-base text-center shadow-sm">
+              What are the key GDPR compliance requirements for my SaaS business?
+            </div>
+          </div>
+
+          <!-- ANSWER card -->
+          <article class="w-full bg-white border border-slate-200 rounded-2xl p-8 shadow-sm">
+            <p class="mb-6 text-slate-700">For GDPR compliance in your SaaS business, focus on:</p>
+            <ul class="space-y-4 text-slate-800">
+              <li><span class="font-semibold">Data Protection Officer (DPO)</span> – required if you process large-scale data or special categories of data</li>
+              <li><span class="font-semibold">Privacy Policy</span> – must be transparent, concise, and easily accessible</li>
+              <li><span class="font-semibold">Lawful Basis</span> – obtain explicit consent or have another lawful basis for processing</li>
+              <li><span class="font-semibold">Data Subject Rights</span> – implement procedures for requests to access, rectify, erase data</li>
+              <li><span class="font-semibold">Breach Notification</span> – report to authorities within 72 hours of discovery</li>
+              <li><span class="font-semibold">Privacy by Design</span> – build data protection into your systems from the start</li>
+            </ul>
+          </article>
+
+          <!-- (optional) Add a short suggestions row under answer -->
+          <div class="w-full max-w-2xl flex flex-wrap gap-3">
+            <button class="px-4 py-2 rounded-md bg-white border border-slate-200 shadow-sm text-sm">💼 Licenses</button>
+            <button class="px-4 py-2 rounded-md bg-white border border-slate-200 shadow-sm text-sm">📑 Filing Checklist</button>
+            <button class="px-4 py-2 rounded-md bg-white border border-slate-200 shadow-sm text-sm">🧾 Taxes</button>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Bottom composer (fixed) -->
+      <div class="fixed left-64 right-0 bottom-0 bg-slate-50 border-t border-slate-200">
+        <div class="mx-auto max-w-3xl px-6 py-5">
+          <div class="relative">
+            <div class="bg-white border border-slate-200 rounded-full h-12 flex items-center px-4 shadow-sm">
+              <input id="composer-text" type="text" placeholder="Ask about licenses, taxes, registrations, or compliance tasks..." class="flex-1 bg-transparent outline-none text-slate-700 placeholder:text-slate-400" />
+              <button id="send-btn" class="ml-4 w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center hover:bg-slate-200">
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <script>
+    // tiny interactive demo: send focus
+    document.getElementById('send-btn').addEventListener('click', () => {
+      const t = document.getElementById('composer-text');
+      if (!t.value.trim()) { t.focus(); return; }
+      alert('Send: ' + t.value);
+      t.value = '';
+    });
+  </script>
+</body>
+</html>

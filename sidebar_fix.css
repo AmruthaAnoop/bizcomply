@@ -1,0 +1,62 @@
+/* Comprehensive fix for sidebar extra boxes */
+
+/* Hide ALL empty containers in sidebar */
+.css-1d391kg .element-container:empty,
+.css-1d391kg div:empty,
+.css-1d391kg .stVerticalBlock:empty,
+.css-1d391kg .stVerticalBlock > div:empty,
+.css-1d391kg > div > div:empty,
+.css-1d391kg > div > div > div:empty {
+    display: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: none !important;
+    background-color: transparent !important;
+    height: 0 !important;
+    min-height: 0 !important;
+    max-height: 0 !important;
+}
+
+/* Remove borders and backgrounds from ALL sidebar containers by default */
+.css-1d391kg .element-container,
+.css-1d391kg div,
+.css-1d391kg .stVerticalBlock,
+.css-1d391kg > div > div {
+    background-color: transparent !important;
+    border: none !important;
+    margin-bottom: 0 !important;
+}
+
+/* Only add styling to SPECIFIC content containers */
+.css-1d391kg .element-container:has(.stForm),
+.css-1d391kg .element-container:has(.stButton),
+.css-1d391kg .element-container:has(.sidebar-section-title),
+.css-1d391kg div:has(.stForm),
+.css-1d391kg div:has(.stButton),
+.css-1d391kg div:has(.sidebar-section-title) {
+    background-color: #FFFFFF !important;
+    border: 1px solid #E2E8F0 !important;
+    border-radius: 8px !important;
+    padding: 16px !important;
+    margin-bottom: 16px !important;
+    width: 100% !important;
+    box-sizing: border-box !important;
+}
+
+/* Header should never have box styling */
+.css-1d391kg > div > div:first-child,
+.css-1d391kg .sidebar-header {
+    background-color: transparent !important;
+    border: none !important;
+    padding: 16px !important;
+    margin-bottom: 0 !important;
+}
+
+/* Stats grid special handling */
+.css-1d391kg div:has(.stats-grid) {
+    background-color: #FFFFFF !important;
+    border: 1px solid #E2E8F0 !important;
+    border-radius: 8px !important;
+    padding: 16px !important;
+    margin-bottom: 16px !important;
+}
