@@ -12,6 +12,9 @@ import pickle
 # Load environment variables
 load_dotenv()
 
+# Import config for API keys
+from config.config import OPENAI_API_KEY
+
 # Configuration
 PDF_DIRECTORY = "./documents"
 DB_FAISS_PATH = "./vectorstore/db_faiss"
@@ -54,7 +57,7 @@ def create_vector_database():
         # Use SemanticChunker to keep logical groups together (like full Section 447)
         try:
             # Try with OpenAI embeddings first (more accurate)
-            if os.getenv("OPENAI_API_KEY") and os.getenv("OPENAI_API_KEY") != "your_openai_api_key_here":
+            if OPENAI_API_KEY and OPENAI_API_KEY != "your_openai_api_key_here":
                 embeddings = OpenAIEmbeddings()
                 text_splitter = SemanticChunker(embeddings, breakpoint_threshold_type="percentile")
                 chunks = text_splitter.split_documents(documents)

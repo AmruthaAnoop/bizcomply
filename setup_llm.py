@@ -19,8 +19,9 @@ def setup_groq():
     print("   [System.Environment]::SetEnvironmentVariable('GROQ_API_KEY', 'your-groq-api-key-here', 'User')")
     print("\n4. Restart your terminal and the application")
     
-    # Check if key is already set
-    if os.getenv("GROQ_API_KEY"):
+    # Check if key is already set using config
+    from config.config import GROQ_API_KEY
+    if GROQ_API_KEY:
         print("\n✅ GROQ_API_KEY is already set!")
     else:
         print("\n⚠️  GROQ_API_KEY is not set yet")
@@ -37,8 +38,9 @@ def setup_openai():
     print("\n3. Or set it permanently:")
     print("   [System.Environment]::SetEnvironmentVariable('OPENAI_API_KEY', 'your-openai-api-key-here', 'User')")
     
-    # Check if key is already set
-    if os.getenv("OPENAI_API_KEY"):
+    # Check if key is already set using config
+    from config.config import OPENAI_API_KEY
+    if OPENAI_API_KEY:
         print("\n✅ OPENAI_API_KEY is already set!")
     else:
         print("\n⚠️  OPENAI_API_KEY is not set yet")
@@ -58,12 +60,12 @@ def main():
     elif choice == "2":
         setup_openai()
     elif choice == "3":
-        from config.config import LLM_PROVIDER, LLM_MODEL
+        from config.config import LLM_PROVIDER, LLM_MODEL, GROQ_API_KEY, OPENAI_API_KEY
         print(f"\nCurrent configuration:")
         print(f"  Provider: {LLM_PROVIDER}")
         print(f"  Model: {LLM_MODEL}")
-        print(f"  GROQ_API_KEY: {'✅ Set' if os.getenv('GROQ_API_KEY') else '❌ Not set'}")
-        print(f"  OPENAI_API_KEY: {'✅ Set' if os.getenv('OPENAI_API_KEY') else '❌ Not set'}")
+        print(f"  GROQ_API_KEY: {'✅ Set' if GROQ_API_KEY else '❌ Not set'}")
+        print(f"  OPENAI_API_KEY: {'✅ Set' if OPENAI_API_KEY else '❌ Not set'}")
     else:
         print("Invalid choice!")
 

@@ -1,6 +1,9 @@
 import streamlit as st
 from business_profile import business_profile_manager
-from compliance_engine import compliance_engine
+from models.compliance_engine import ComplianceEngine
+
+# Initialize compliance engine
+compliance_engine = ComplianceEngine()
 
 def main():
     st.set_page_config(page_title="BizComply AI", page_icon="🏢", layout="wide")
