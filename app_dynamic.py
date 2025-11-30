@@ -1,17 +1,28 @@
 import streamlit as st
-from datetime import datetime
+import requests
+import json
 import os
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any, List
 
-# Try importing the dynamic router
+# --- CONFIGURATION ---
+st.set_page_config(
+    page_title="BizComply AI",
+    page_icon="🏢",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# --- 1. BACKEND LOGIC ---
+
+# Import the Dynamic Brain
 try:
     from agent_engine_new import get_verified_answer
     RAG_AVAILABLE = True
 except ImportError:
     RAG_AVAILABLE = False
-    print("Warning: agent_engine_new.py not found. Using fallback responses.")
 
-# --- 1. CONVERSATION STATE ---
-
+# Data Structures
 class ConversationState:
     def __init__(self):
         self.current_step = "onboarding"
@@ -19,7 +30,7 @@ class ConversationState:
         self.completed_questions = []
     
     def is_profile_complete(self):
-        return all([self.user_profile["location"], self.user_profile["entity_type"], self.user_profile["industry"]])
+        return all(self.user_profile.get(k) for k in ["location", "entity_type", "industry"])
     
     def update_profile(self, key, value):
         self.user_profile[key] = value
@@ -28,9 +39,9 @@ class ConversationState:
 
 class ComplianceChatbot:
     """
-    Dynamic Chatbot that uses the Agentic Brain with Clean White Theme.
+    Dynamic Chatbot that uses the Agentic Brain.
     """
-    def process_message(self, user_message, conversation_state, response_mode="Standard"):
+    def process_message(self, user_message, conversation_state, response_mode="simple"):
         # 1. Handle Onboarding (Fixed Flow)
         if conversation_state.current_step == "onboarding":
             return self._handle_onboarding(user_message, conversation_state)
@@ -53,9 +64,9 @@ class ComplianceChatbot:
         
         return "⚠️ Core Brain (agent_engine_new.py) not found. Please check file setup."
 
-    def _format_response(self, response: str, mode: str = "Standard") -> str:
-        """Format response based on mode with clean white theme styling"""
-        if mode == "Concise":
+    def _format_response(self, response: str, mode: str = "simple") -> str:
+        """Format response based on mode with extreme distinction between modes"""
+        if mode == "concise":
             # ULTRA-concise: Maximum 2 bullet points, under 60 characters each
             lines = response.split('\n')
             essential_lines = []
@@ -89,9 +100,9 @@ class ComplianceChatbot:
                         break
                 essential_lines = [f"• {short_phrase.strip()}..."]
             
-            return '\n'.join(essential_lines) + "\n\n💡 *Switch to Detailed mode for comprehensive guidance.*"
+            return '\n'.join(essential_lines) + "\n\n💡 *Switch to Detailed for full guidance.*"
             
-        elif mode == "Standard":
+        elif mode == "simple":
             # SIMPLE: Maximum 5 sentences - clean, readable format
             sentences = response.split('.')
             simple_sentences = []
@@ -132,7 +143,7 @@ class ComplianceChatbot:
             
             return simple_response + "\n\n💡 *Switch to Concise for bullet points or Detailed for comprehensive analysis.*"
             
-        elif mode == "Detailed":
+        elif mode == "detailed":
             # COMPREHENSIVE: Full analysis with multiple sections, examples, and action plans
             detailed_response = response + "\n\n---\n\n**📋 Comprehensive Compliance Analysis:**\n"
             
@@ -183,6 +194,18 @@ class ComplianceChatbot:
                 detailed_response += "• **GSTR-3B**: 20th of each month (summary return)\n"
                 detailed_response += "• **Annual Return**: GSTR-9 by 31st December\n"
                 detailed_response += "• **Audit Turnover**: GSTR-9C if turnover > ₹2 Crore\n"
+            
+            if "license" in response.lower() or "registration" in response.lower():
+                detailed_response += "\n### 📋 **License & Registration Process**\n"
+                detailed_response += "**Required Documents:**\n"
+                detailed_response += "• **PAN Card**: Mandatory for all business registrations\n"
+                detailed_response += "• **Aadhaar**: Director/partner identification\n"
+                detailed_response += "• **Address Proof**: Utility bill or rent agreement\n"
+                detailed_response += "• **Bank Account**: Business current account details\n\n"
+                detailed_response += "**Timeline & Costs:**\n"
+                detailed_response += "• **DLIN Registration**: 1-2 days, ₹500 (government fee)\n"
+                detailed_response += "• **GST Registration**: 3-7 working days, free\n"
+                detailed_response += "• **Trade License**: 7-10 days, varies by municipality\n"
             
             # Actionable implementation plan
             detailed_response += "\n### 🎯 **Implementation Roadmap**\n"
@@ -236,8 +259,8 @@ class ComplianceChatbot:
             
             return detailed_response
             
-        else:  # fallback to Standard
-            return self._format_response(response, "Standard")
+        else:  # fallback to simple
+            return self._format_response(response, "simple")
 
     def _handle_onboarding(self, message, state):
         if "location" not in state.completed_questions: 
@@ -263,279 +286,180 @@ class ComplianceEngine:
     def get_business_profile(self, bid): 
         return self.profiles.get(bid)
 
-# --- 2. CLEAN WHITE THEME STYLING ---
+# --- 2. UI STYLING (White Box Fix) ---
 
-def apply_styling():
-    """Apply Clean White Theme with Standard Fonts and Dynamic Router Integration"""
+def load_css():
     st.markdown("""
     <style>
-    /* --- 1. GLOBAL RESETS & FONTS --- */
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
-    
     :root {
-        --bg-color: #FFFFFF;
-        --text-color: #000000;
-        --sidebar-bg: #F9F9F9;
-        --border-color: #E5E5E5;
-        --primary-color: #000000;
+        --bg-color: #212121;
+        --sidebar-bg: #171717;
+        --text-primary: #ECECEC;
+        --input-bg: #2F2F2F;
     }
-
-    /* Main App Background - Pure White */
-    .stApp {
-        background-color: var(--bg-color) !important;
-        color: var(--text-color) !important;
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
-    }
+    .stApp { background-color: var(--bg-color); color: var(--text-primary); }
     
-    /* Headers */
-    h1, h2, h3, p {
-        color: #000000 !important;
-        font-weight: 500 !important;
-    }
-
-    /* --- 2. SIDEBAR STYLING (Full Black) --- */
-    [data-testid="stSidebar"] {
-        background-color: #000000 !important;
-        border-right: 1px solid #333333 !important;
-    }
-    
-    /* Sidebar Headers - Styled Fonts */
-    .sidebar-header {
-        font-size: 18px;
-        font-weight: 600;
-        color: #FFFFFF !important;
-        padding: 15px 0;
-        margin-bottom: 25px;
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-    }
-    
-    /* Sidebar Section Headers */
-    [data-testid="stSidebar"] h3 {
-        color: #FFFFFF !important;
-        font-weight: 600 !important;
-        font-size: 14px !important;
-        text-transform: uppercase;
-        letter-spacing: 0.8px;
-        margin: 20px 0 10px 0 !important;
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
-    }
-    
-    /* Sidebar Text */
-    [data-testid="stSidebar"] p, [data-testid="stSidebar"] .stMarkdown {
-        color: #CCCCCC !important;
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
-    }
-
-    /* Sidebar Buttons - Black Theme */
-    [data-testid="stSidebar"] button {
-        background-color: transparent !important;
-        color: #FFFFFF !important;
-        border: 1px solid #333333 !important;
-        text-align: left !important;
-        padding: 12px 15px !important;
-        font-size: 14px !important;
-        border-radius: 8px !important;
-        transition: all 0.3s ease !important;
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
-        font-weight: 500 !important;
-        margin-bottom: 5px !important;
-    }
-    
-    [data-testid="stSidebar"] button:hover {
-        background-color: #1A1A1A !important;
-        border-color: #555555 !important;
-        transform: translateX(3px) !important;
-    }
-    
-    /* Sidebar Inputs - Black Theme */
-    [data-testid="stSidebar"] .stTextInput > div > div,
-    [data-testid="stSidebar"] .stSelectbox > div > div {
-        background-color: #1A1A1A !important;
-        border: 1px solid #333333 !important;
-        color: #FFFFFF !important;
-        border-radius: 6px !important;
-    }
-    
-    [data-testid="stSidebar"] input, 
-    [data-testid="stSidebar"] select,
-    [data-testid="stSidebar"] div[data-baseweb="select"] span {
-        color: #FFFFFF !important;
-        background-color: #1A1A1A !important;
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
-    }
-    
-    /* Sidebar Success/Info Messages */
-    [data-testid="stSidebar"] .stSuccess,
-    [data-testid="stSidebar"] .stInfo {
-        background-color: #1A1A1A !important;
-        color: #FFFFFF !important;
-        border: 1px solid #333333 !important;
-    }
-
-    /* Response Mode Radio - Black Theme */
-    .stRadio > div[role="radiogroup"] {
-        background: #1A1A1A !important;
-        border: 1px solid #333333 !important;
-        border-radius: 8px !important;
-        padding: 12px !important;
-    }
-    .stRadio label {
-        color: #FFFFFF !important;
-        font-weight: 500 !important;
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
-    }
-    .stRadio div[role="radio"] {
-        background: #2A2A2A !important;
-        border: 1px solid #444444 !important;
-        border-radius: 6px !important;
-        margin: 3px 0 !important;
-    }
-    .stRadio div[role="radio"][aria-checked="true"] {
-        background: #3A3A3A !important;
-        border-color: #666666 !important;
-    }
-
-    /* --- 3. CHAT AREA STYLING --- */
-    
-    /* User Message: Dark Grey Bubble, White Text */
-    .user-message {
-        background-color: #535151 !important;
-        color: #FFFFFF !important;
-        padding: 12px 16px;
-        border-radius: 13px 13px 13px 16px;
-        max-width: 40%;
-        margin-left: auto;
-        margin-bottom: 15px;
-        font-size: 15px;
-        line-height: 1.5;
-        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
-    }
-    
-    /* Assistant Message: Light Grey Background, Black Text */
-    .assistant-message {
-        background-color: #92929217 !important;
-        color: #000000 !important;
-        padding: 0 10px;
-        max-width: 90%;
-        margin-right: auto;
-        margin-bottom: 25px;
-        font-size: 15px;
-        line-height: 1.6;
-        border-left: 2px solid #d4d3d3;
-        padding-left: 15px;
-    }
-    
-    /* Remove default Streamlit labels */
-    .user-message strong:first-child,
-    .assistant-message strong:first-child {
-        display: none !important;
-    }
-
-    /* --- 4. INPUT BAR (All Black with Grey Text Area) --- */
-    .stChatInput {
-        position: fixed !important;
-        bottom: 0 !important;
-        left: 250px !important; /* Updated as requested */
-        right: 0 !important;
-        background-color: #000000 !important;
-        padding: 20px !important;
-        border-top: 2px solid #333333 !important;
-        z-index: 999 !important;
-        display: flex !important;
-        justify-content: center !important;
-    }
-    
-    .stChatInput > div {
-        width: 100% !important;
-        max-width: 800px !important;
-    }
-    
-    .stChatInput textarea {
-        background-color: #1A1A1A !important; /* Dark grey for visibility */
-        color: #FFFFFF !important;
-        border: 2px solid #333333 !important;
-        border-radius: 12px !important;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.3) !important;
-        font-size: 15px !important;
-        padding: 12px 16px !important;
-        min-height: 20px !important;
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
-        transition: all 0.3s ease !important;
-    }
-    
-    .stChatInput textarea:focus {
-        background-color: #2A2A2A !important; /* Lighter grey when focused */
-        border-color: #555555 !important;
-        box-shadow: 0 2px 12px rgba(255,255,255,0.1) !important;
-        outline: none !important;
-    }
-    
-    .stChatInput textarea::placeholder {
-        color: #888888 !important;
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
-    }
-    
-    /* Ensure input is always visible */
-    .stChatInputContainer {
-        position: fixed !important;
-        bottom: 0 !important;
-        left: 250px !important; /* Updated to match */
-        right: 0 !important;
-        background-color: #000000 !important;
-        padding: 20px !important;
-        border-top: 2px solid #333333 !important;
-        z-index: 999 !important;
-    }
-    
-    /* Main content padding to avoid overlap with fixed input */
+    /* Main Content Area - White Background */
     .main .block-container {
-        padding-bottom: 120px !important;
-    }
-
-    /* --- 5. CARDS & CONTAINERS --- */
-    .page-content {
-        background: #FFFFFF;
-        border: 1px solid #E5E5E5;
-        border-radius: 10px;
-        padding: 30px;
-        margin-bottom: 20px;
+        background-color: #FFFFFF !important;
+        padding: 2rem !important;
+        border-radius: 10px !important;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1) !important;
+        margin: 1rem !important;
     }
     
-    /* Hero Section - Clean White */
-    .hero-section {
+    /* Chat messages - White background */
+    .stChatMessage {
         background-color: #FFFFFF !important;
-        border: 1px solid #E5E5E5 !important;
-        color: #000000 !important;
-        padding: 40px;
+        border: 1px solid #E5E7EB !important;
+        border-radius: 8px !important;
+        margin: 0.5rem 0 !important;
+    }
+    
+    /* User message styling */
+    .stChatMessage[data-testid="chat-message-container-user"] {
+        background-color: #F3F4F6 !important;
+        border-left: 4px solid #3B82F6 !important;
+    }
+    
+    /* Assistant message styling */
+    .stChatMessage[data-testid="chat-message-container-assistant"] {
+        background-color: #FFFFFF !important;
+        border-left: 4px solid #10B981 !important;
+    }
+    
+    /* Custom message bubbles */
+    .user-message { 
+        background-color: #F3F4F6 !important; 
+        color: #1F2937 !important; 
+        padding: 12px; 
+        border-radius: 15px; 
+        margin: 10px 0 10px auto; 
+        max-width: 80%; 
+        text-align: right;
+        border-left: 4px solid #3B82F6 !important;
+    }
+    .assistant-message { 
+        background-color: #FFFFFF !important; 
+        color: #1F2937 !important; 
+        padding: 10px; 
+        margin: 10px 0; 
+        max-width: 90%; 
+        border-left: 4px solid #10B981 !important;
+    }
+    
+    /* Header - White */
+    .main-header {
+        background-color: #FFFFFF !important;
+        border: 1px solid #E5E7EB !important;
+        color: #1F2937 !important;
+        padding: 20px;
         border-radius: 10px;
         margin-bottom: 20px;
         text-align: center;
     }
     
-    /* Hide top header decoration */
-    header {visibility: hidden;}
-    .main .block-container {
-        padding-top: 2rem;
-        padding-bottom: 6rem;
-        max-width: 800px;
+    /* Sidebar Background */
+    [data-testid="stSidebar"] { background-color: var(--sidebar-bg); border-right: 1px solid #333; }
+
+    /* --- WHITE BOX FIX START --- */
+    /* Make sidebar inputs transparent */
+    [data-testid="stSidebar"] .stTextInput > div > div,
+    [data-testid="stSidebar"] .stSelectbox > div > div {
+        background-color: transparent !important;
+        border: 1px solid #444 !important;
+        color: white !important;
+    }
+    [data-testid="stSidebar"] input, 
+    [data-testid="stSidebar"] select,
+    [data-testid="stSidebar"] div[data-baseweb="select"] span {
+        color: white !important;
+        -webkit-text-fill-color: white !important;
+    }
+    /* Remove form background */
+    [data-testid="stSidebar"] [data-testid="stForm"] { background: transparent !important; }
+    /* --- WHITE BOX FIX END --- */
+
+    /* Chat Bubbles - Updated for White Background */
+    .user-message { 
+        background-color: #F3F4F6 !important; 
+        color: #1F2937 !important; 
+        padding: 12px; 
+        border-radius: 15px; 
+        margin: 10px 0 10px auto; 
+        max-width: 80%; 
+        text-align: right;
+        border-left: 4px solid #3B82F6 !important;
+    }
+    .assistant-message { 
+        background-color: #FFFFFF !important; 
+        color: #1F2937 !important; 
+        padding: 10px; 
+        margin: 10px 0; 
+        max-width: 90%; 
+        border-left: 4px solid #10B981 !important;
+    }
+    
+    /* Input Bar */
+    .stChatInputContainer textarea { 
+        background-color: var(--input-bg) !important; 
+        color: white !important; 
+        border: 1px solid #444 !important; 
+        border-radius: 24px !important; 
+    }
+    
+    /* Buttons */
+    .stButton button { 
+        background: transparent; 
+        border: 1px solid #444; 
+        color: white; 
+        width: 100%; 
+        text-align: left; 
+    }
+    .stButton button:hover { 
+        background: #333; 
+        border-color: #666; 
+    }
+    
+    /* Response Mode Radio */
+    .stRadio > div[role="radiogroup"] {
+        background: transparent !important;
+        border: 1px solid #444 !important;
+        border-radius: 8px !important;
+        padding: 10px !important;
+    }
+    .stRadio label {
+        color: white !important;
+        font-weight: 500 !important;
+    }
+    .stRadio div[role="radio"] {
+        background: #2F2F2F !important;
+        border: 1px solid #555 !important;
+        border-radius: 4px !important;
+        margin: 2px 0 !important;
+    }
+    .stRadio div[role="radio"][aria-checked="true"] {
+        background: #444 !important;
+        border-color: #666 !important;
+    }
+    
+    /* Header */
+    .main-header {
+        background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
+        padding: 20px;
+        border-radius: 10px;
+        margin-bottom: 20px;
+        text-align: center;
     }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 3. MAIN APPLICATION ---
+# --- 3. MAIN LOGIC ---
 
 def main():
-    st.set_page_config(page_title="BizComply AI", page_icon="🏢", layout="wide")
+    load_css()
     
-    # Apply Clean White Theme
-    apply_styling()
-    
-    # Initialize session state
+    # Init State
     if 'conversations' not in st.session_state: 
         st.session_state.conversations = []
     if 'active_conv_id' not in st.session_state:
@@ -543,7 +467,7 @@ def main():
         st.session_state.conversations.insert(0, {"id": new_id, "title": "New Chat", "messages": []})
         st.session_state.active_conv_id = new_id
     if 'response_mode' not in st.session_state:
-        st.session_state.response_mode = "Standard"
+        st.session_state.response_mode = "simple"
     
     if 'chatbot' not in st.session_state:
         st.session_state.chatbot = ComplianceChatbot()
@@ -552,17 +476,45 @@ def main():
 
     # --- SIDEBAR ---
     with st.sidebar:
-        st.markdown('<div class="sidebar-header"><span>🏢</span> BizComply AI</div>', unsafe_allow_html=True)
+        st.markdown("## 🏢 BizComply AI")
+        if st.button("＋ New Chat"):
+            new_id = str(int(datetime.now().timestamp()))
+            st.session_state.conversations.insert(0, {"id": new_id, "title": "New Chat", "messages": []})
+            st.session_state.active_conv_id = new_id
+            st.rerun()
         
-        # Business Profile
-        st.markdown("### 👤 Profile")
+        st.markdown("---")
+        
+        # Response Mode Selector
+        st.markdown("**Response Mode**")
+        response_mode = st.radio(
+            "Choose response style:",
+            options=["Simple", "Concise", "Detailed"],
+            index=["simple", "concise", "detailed"].index(st.session_state.response_mode),
+            key="response_mode_selector",
+            help="Simple: Standard response\nConcise: Short, summarized replies (2-3 bullet points max)\nDetailed: Expanded, in-depth responses with analysis and action plans"
+        )
+        st.session_state.response_mode = ["simple", "concise", "detailed"][["Simple", "Concise", "Detailed"].index(response_mode)]
+        
+        # Show current mode indicator
+        mode_descriptions = {
+            "simple": "📝 Simple answers (5 sentences max)",
+            "concise": "⚡ Ultra-short summaries (2-3 points max)",
+            "detailed": "📚 Comprehensive analysis with action plans"
+        }
+        st.markdown(f"<small style='color: #6B7280;'>{mode_descriptions[st.session_state.response_mode]}</small>", unsafe_allow_html=True)
+        
+        st.markdown("---")
+        
+        # Profile Form
         if 'biz_id' not in st.session_state:
             with st.form("profile"):
+                st.markdown("**Business Profile**")
                 name = st.text_input("Name", placeholder="Business Name")
                 btype = st.selectbox("Type", ["LLP", "Private Ltd", "Proprietor"])
                 loc = st.selectbox("Location", ["Delhi", "Mumbai", "Bangalore"])
                 if st.form_submit_button("Save"):
-                    st.session_state.biz_id = "123"
+                    st.session_state.biz_id = "123" # Mock save
                     st.session_state.engine.create_business_profile(name, btype, loc, "REG123")
                     st.rerun()
         else:
@@ -571,104 +523,23 @@ def main():
                 del st.session_state.biz_id
                 st.rerun()
 
-        st.markdown("---")
-        
-        # Response Mode Preferences
-        st.markdown("### ⚙️ Response Mode")
-        mode = st.radio(
-            "Choose response style:",
-            options=["Concise", "Standard", "Detailed"],
-            index=["Concise", "Standard", "Detailed"].index(st.session_state.response_mode),
-            key="response_mode_selector",
-            help="Concise: 2-3 bullet points (60 chars max)\nStandard: 5 sentences max\nDetailed: Comprehensive analysis with action plans"
-        )
-        st.session_state.response_mode = mode
-        
-        # Show current mode indicator
-        mode_descriptions = {
-            "Concise": "⚡ Ultra-short summaries (2-3 points max)",
-            "Standard": "📝 Standard answers (5 sentences max)",
-            "Detailed": "📚 Comprehensive analysis with action plans"
-        }
-        st.markdown(f"<small style='color: #666666;'>{mode_descriptions[st.session_state.response_mode]}</small>", unsafe_allow_html=True)
-        
-        st.markdown("---")
-        
-        # Chat History
-        st.markdown("### 💬 Chat History")
-        
-        # Show conversation list
-        if len(st.session_state.conversations) > 1:
-            for i, conv in enumerate(st.session_state.conversations):
-                if conv['id'] != st.session_state.active_conv_id:
-                    # Show conversation title with message count
-                    msg_count = len(conv['messages'])
-                    title = conv['title'] if conv['title'] else f"Chat {i+1}"
-                    
-                    col1, col2 = st.columns([4, 1])
-                    with col1:
-                        if st.button(f"💭 {title}", key=f"chat_{conv['id']}", use_container_width=True):
-                            st.session_state.active_conv_id = conv['id']
-                            st.rerun()
-                    with col2:
-                        if st.button("🗑️", key=f"del_{conv['id']}", use_container_width=True):
-                            st.session_state.conversations = [c for c in st.session_state.conversations if c['id'] != conv['id']]
-                            # If we deleted the active chat, switch to the first available
-                            if st.session_state.active_conv_id == conv['id'] and st.session_state.conversations:
-                                st.session_state.active_conv_id = st.session_state.conversations[0]['id']
-                            st.rerun()
-        else:
-            st.markdown("<small style='color: #666666;'>No previous chats</small>", unsafe_allow_html=True)
-        
-        # Clear all chats option
-        if len(st.session_state.conversations) > 1:
-            if st.button("🗑️ Clear All History", key="clear_all", use_container_width=True):
-                # Keep only the current active conversation
-                active_conv = next((c for c in st.session_state.conversations if c['id'] == st.session_state.active_conv_id), None)
-                if active_conv:
-                    st.session_state.conversations = [active_conv]
-                st.rerun()
-        
-        st.markdown("---")
-        
-        # Navigation - Keep only essential working features
-        st.markdown("### 🛠️ Features")
-        if st.button("🏠 New Chat", use_container_width=True): 
-            new_id = str(int(datetime.now().timestamp()))
-            st.session_state.conversations.insert(0, {"id": new_id, "title": "New Chat", "messages": []})
-            st.session_state.active_conv_id = new_id
-            st.rerun()
-
-    # --- MAIN CONTENT AREA ---
+    # --- CHAT AREA ---
     active_conv = next((c for c in st.session_state.conversations if c['id'] == st.session_state.active_conv_id), None)
     
-    # Current Chat Title
-    if active_conv:
-        current_title = active_conv['title'] if active_conv['title'] else "New Chat"
-        st.markdown(f"""
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding: 10px 0;">
-            <h3 style="margin: 0; color: #000000;">💭 {current_title}</h3>
-            <small style="color: #666666;">{len(active_conv['messages'])} messages</small>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    # Hero Section
-    if not active_conv or not active_conv['messages']:
-        st.markdown("""
-        <div class="hero-section">
-            <h1>🏢 BizComply AI</h1>
-            <p style="color: #666666;">Your professional compliance assistant with Dynamic Semantic Routing</p>
-            <p style="color: #666666; font-size: 14px;">✨ No keywords needed - understands any phrasing automatically!</p>
-        </div>
-        """, unsafe_allow_html=True)
+    # Header
+    st.markdown("""
+    <div class="main-header">
+        <h1>🏢 BizComply AI</h1>
+        <p>Dynamic Compliance Assistant with Semantic Routing</p>
+        <p><small>✨ No keywords needed - understands any phrasing automatically!</small></p>
+    </div>
+    """, unsafe_allow_html=True)
     
     if active_conv:
-        # Render Chat History
+        # Render History
         for msg in active_conv['messages']:
-            if msg['is_user']:
-                st.markdown(f'<div class="user-message">{msg["content"]}</div>', unsafe_allow_html=True)
-            else:
-                st.markdown(f'<div class="assistant-message">{msg["content"]}</div>', unsafe_allow_html=True)
+            div_class = "user-message" if msg['is_user'] else "assistant-message"
+            st.markdown(f"<div class='{div_class}'>{msg['content']}</div>", unsafe_allow_html=True)
 
         # Input
         prompt = st.chat_input("Ask about compliance...")
