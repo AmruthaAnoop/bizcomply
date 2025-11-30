@@ -1,0 +1,29 @@
+{{ define "slack.default.title" }}{{ .CommonLabels.alertname }} - {{ .CommonLabels.severity | toUpper }}{{ end }}
+
+{{ define "slack.default.titlelink" }}{{ .ExternalURL }}/#/alerts?receiver={{ .Receiver }}{{ end }}
+
+{{ define "slack.default.fallback" }}{{ .CommonAnnotations.summary }} {{ .CommonLabels.severity | toUpper }}{{ end }}
+
+{{ define "slack.default.text" }}
+{{ if .CommonAnnotations.description }}{{ .CommonAnnotations.description }}
+{{ end }}
+
+{{ if .CommonAnnotations.runbook }}
+*Runbook*: {{ .CommonAnnotations.runbook }}
+{{ end }}
+
+*Alerts*:
+{{ range .Alerts }}
+*Alert:* {{ .Labels.alertname }}
+*Status:* {{ .Status }}
+*Severity:* {{ .Labels.severity }}
+*Summary:* {{ .Annotations.summary }}
+*Description:* {{ .Annotations.description }}
+*Starts at:* {{ .StartsAt }}
+{{ if eq .Status "firing" }}
+:fire: *Alert is firing!*
+{{ else }}
+:white_check_mark: *Alert resolved* at {{ .EndsAt }}
+{{ end }}
+{{ end }}
+{{ end }}

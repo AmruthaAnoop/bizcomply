@@ -1,0 +1,170 @@
+/* DEEP CLEAN: Remove ALL white boxes from sidebar */
+
+/* 1. Remove ALL backgrounds from sidebar */
+div[data-testid="stSidebar"] {
+    background: var(--sidebar-bg) !important;
+}
+
+div[data-testid="stSidebar"] * {
+    background-color: transparent !important;
+    background: transparent !important;
+}
+
+/* 2. Specific form container fixes */
+div[data-testid="stSidebar"] .stForm {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+}
+
+div[data-testid="stSidebar"] .stForm > div {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+}
+
+div[data-testid="stSidebar"] .stForm > div > div {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 0 8px 0 !important;
+}
+
+div[data-testid="stSidebar"] .stForm > div > div > div {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+}
+
+/* 3. Text Input fixes - REMOVE ALL WHITE BOXES */
+div[data-testid="stSidebar"] .stTextInput {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 0 8px 0 !important;
+}
+
+div[data-testid="stSidebar"] .stTextInput > div {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+}
+
+div[data-testid="stSidebar"] .stTextInput > div > div {
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--radius-sm) !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+}
+
+div[data-testid="stSidebar"] .stTextInput > div > div > input {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    color: var(--text-primary) !important;
+    padding: 8px 12px !important;
+}
+
+/* 4. Selectbox fixes - REMOVE ALL WHITE BOXES */
+div[data-testid="stSidebar"] .stSelectbox {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 0 8px 0 !important;
+}
+
+div[data-testid="stSidebar"] .stSelectbox > div {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+}
+
+div[data-testid="stSidebar"] .stSelectbox > div > div {
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--radius-sm) !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+}
+
+div[data-testid="stSidebar"] .stSelectbox > div > div > select {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    color: var(--text-primary) !important;
+    padding: 8px 12px !important;
+}
+
+/* 5. Button fixes */
+div[data-testid="stSidebar"] .stButton > button {
+    background: var(--primary) !important;
+    border: none !important;
+    box-shadow: none !important;
+    margin: 0 !important;
+}
+
+/* 6. Remove any remaining white elements */
+div[data-testid="stSidebar"] div[style*="background-color: rgb(255"],
+div[data-testid="stSidebar"] div[style*="background-color: #fff"],
+div[data-testid="stSidebar"] div[style*="background-color: white"],
+div[data-testid="stSidebar"] div[style*="background: rgb(255"],
+div[data-testid="stSidebar"] div[style*="background: #fff"],
+div[data-testid="stSidebar"] div[style*="background: white"],
+div[data-testid="stSidebar"] div[style*="background-color: rgba(255"],
+div[data-testid="stSidebar"] div[style*="background: rgba(255"] {
+    background-color: transparent !important;
+    background: transparent !important;
+}
+
+/* 7. Remove all element containers */
+div[data-testid="stSidebar"] .element-container {
+    background: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+}
+
+div[data-testid="stSidebar"] .element-container > div {
+    background: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+}
+
+/* 8. Force remove all Streamlit default styling */
+div[data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
+    background: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+}
+
+div[data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div {
+    background: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+}
+
+div[data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"] {
+    background: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+}
